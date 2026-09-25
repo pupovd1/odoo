@@ -8,10 +8,13 @@
                     <header>
                         <button name="action_set_won_rainbowman" string="Won"
                             type="object" class="oe_highlight" data-hotkey="w"
+                            data-available-offline=""
                             invisible="won_status == 'won' or type == 'lead' or not active"/>
                         <button name="action_convert_to_opportunity" string="Convert to Opportunity" type="object"
-                            class="oe_highlight" invisible="type == 'opportunity' or not active" data-hotkey="v"/>
+                            class="oe_highlight" invisible="type == 'opportunity' or not active" data-hotkey="v"
+                            data-available-offline=""/>
                         <button name="action_restore" string="Restore" type="object" data-hotkey="x"
+                            data-available-offline=""
                             invisible="won_status != 'lost'"/>
                         <button name="%(crm.crm_lead_lost_action)d" string="Lost" type="action" data-hotkey="l"
                             invisible="won_status != 'pending' or not active"/>
@@ -33,6 +36,7 @@
                             <button name="action_schedule_meeting" type="object"
                                 class="oe_stat_button" icon="calendar_today" icon_class="oi-filled"
                                 context="{'partner_id': partner_id}"
+                                data-available-offline=""
                                 invisible="not id or type == 'lead'">
                                 <div class="o_stat_info">
                                     <span class="o_stat_text"><field name="meeting_display_label"/></span>

@@ -1,10 +1,11 @@
-import { Component, status, t, useProps } from "@odoo/owl";
+import { Component, status, t, usePlugin, useProps } from "@odoo/owl";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
 import { localization } from "@web/core/l10n/localization";
-import { registry } from '@web/core/registry';
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { registry } from "@web/core/registry";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { useService } from "@web/core/utils/hooks";
-
+import { _t } from "@web/core/l10n/translation";
 
 export class CrmPlsTooltip extends Component {
     static template = "crm.PlsTooltip";
@@ -19,7 +20,6 @@ export class CrmPlsTooltip extends Component {
     });
 }
 
-
 export class CrmPlsTooltipButton extends Component {
     static template = "crm.PlsTooltipButton";
 
@@ -29,52 +29,58 @@ export class CrmPlsTooltipButton extends Component {
         super.setup();
         this.orm = useService("orm");
         this.ui = useService("ui");
+        this.notification = useService("notification");
+        this.offlinePlugin = usePlugin(OfflinePlugin);
         this.popover = usePopover(CrmPlsTooltip, {
-            popoverClass: 'mt-2 me-2',
+            popoverClass: "mt-2 me-2",
             position: "bottom-start",
-            useBottomSheet: this.ui.isSmall
+            useBottomSheet: this.ui.isSmall,
         });
     }
 
     async onClickPlsTooltipButton(ev) {
+        if (this.offlinePlugin.isOffline()) {
+            this.notification.add(_t("Probability insights require a connection"), {
+                type: "warning",
+            });
+            return;
+        }
         const tooltipButtonEl = ev.currentTarget;
         if (this.popover.isOpen) {
             this.popover.close();
         } else {
-            // Apply pending changes. They may change probability
             await this.props.record.save();
             if (status(this) === "destroyed" || !this.props.record.resId) {
                 return;
             }
 
-            // This recomputes probability, and returns all tooltip data
             const tooltipData = await this.orm.call(
                 "crm.lead",
                 "prepare_pls_tooltip_data",
                 [this.props.record.resId]
             );
-            // Update the form
             await this.props.record.load();
 
-            // Hard set wheel dimensions, see o_crm_pls_tooltip_wheel in scss and xml
             const progressWheelPerimeter = 2 * Math.PI * 25;
-            const progressBarDashLength = progressWheelPerimeter * tooltipData.probability / 100.0;
+            const progressBarDashLength =
+                (progressWheelPerimeter * tooltipData.probability) / 100.0;
             const progressBarDashGap = progressWheelPerimeter - progressBarDashLength;
-            let dashArrayVals = progressBarDashLength + ' ' + progressBarDashGap;
+            let dashArrayVals = progressBarDashLength + " " + progressBarDashGap;
             if (localization.direction === "rtl") {
-                dashArrayVals = 0 + ' ' + 0.5 * progressWheelPerimeter + ' ' + dashArrayVals;
+                dashArrayVals =
+                    0 + " " + 0.5 * progressWheelPerimeter + " " + dashArrayVals;
             }
             this.popover.open(tooltipButtonEl, {
-                'dashArrayVals': dashArrayVals,
-                'low3Data': tooltipData.low_3_data,
-                'probability': tooltipData.probability,
-                'teamName': tooltipData.team_name,
-                'top3Data': tooltipData.top_3_data,
+                dashArrayVals: dashArrayVals,
+                low3Data: tooltipData.low_3_data,
+                probability: tooltipData.probability,
+                teamName: tooltipData.team_name,
+                top3Data: tooltipData.top_3_data,
             });
         }
     }
 }
 
 registry.category("view_widgets").add("pls_tooltip_button", {
-    component: CrmPlsTooltipButton
+    component: CrmPlsTooltipButton,
 });

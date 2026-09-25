@@ -1,5 +1,6 @@
 import { CrmControlPanel } from "@crm/views/crm_control_panel";
 import { CrmSearchModel } from "@crm/views/crm_search_model";
+import { CrmOfflinePrefetch } from "@crm/views/crm_offline_prefetch";
 import { registry } from "@web/core/registry";
 import { listView } from "@web/views/list/list_view";
 import { LeadGenerationDropdown } from "../../components/lead_generation_dropdown/lead_generation_dropdown";
@@ -10,6 +11,7 @@ export const crmListView = {
         static components = {
             ...listView.Controller.components,
             LeadGenerationDropdown,
+            CrmOfflinePrefetch,
         }
     },
     ControlPanel: CrmControlPanel,

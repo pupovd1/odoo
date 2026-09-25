@@ -13,7 +13,7 @@ import { cookie } from "@web/core/browser/cookie";
 import { isMobileOS } from "@web/core/browser/feature_detection";
 import { DebugModePlugin } from "@web/core/debug_mode_plugin";
 import { _t } from "@web/core/l10n/translation";
-import { rpc } from "@web/core/network/rpc";
+import { ConnectionLostError, rpc } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
 import { user } from "@web/core/user";
 import { Mutex } from "@web/core/utils/concurrency";
@@ -206,6 +206,25 @@ export class Store extends BaseStore {
             try {
                 res = await rpc("/mail/message/post", params, { silent: true });
             } catch (err) {
+                if (err instanceof ConnectionLostError) {
+                    const offlinePlugin = this.env.services.offline;
+                    offlinePlugin.scheduleHTTP("/mail/message/post", params, {
+                        extras: {
+                            timeStamp: Date.now(),
+                            displayName: _t("Message"),
+                            actionName: _t("Messages"),
+                            dependsOn:
+                                typeof params.thread_id === "string" ? params.thread_id : undefined,
+                        },
+                    });
+                    if (tmpMessage) {
+                        tmpMessage.isPending = true;
+                        tmpMessage.postFailMessage = _t(
+                            "Message saved offline. It will sync when you are back online."
+                        );
+                    }
+                    return { store_data: {}, message_id: tmpMessage?.id, offline: true };
+                }
                 if (!tmpMessage) {
                     throw err;
                 }

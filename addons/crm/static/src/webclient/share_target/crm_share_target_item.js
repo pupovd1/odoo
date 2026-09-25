@@ -15,15 +15,18 @@ export class CrmShareTargetItem extends ShareTargetItem {
     }
 
     async updateTeams() {
-        this.state.teams = await this.orm
-            .webSearchRead("crm.team", this.teamsDomain, {
-                specification: { id: {}, display_name: {} },
-                context: this.context
-            })
-            .then(({ records }) => records);
-        this.state.selected_team = this.state.teams.length
-            ? this.state.teams[0]
-            : false;
+        try {
+            this.state.teams = await this.orm
+                .cache({ type: "disk", update: "always" })
+                .webSearchRead("crm.team", this.teamsDomain, {
+                    specification: { id: {}, display_name: {} },
+                    context: this.context,
+                })
+                .then(({ records }) => records);
+        } catch {
+            this.state.teams = this.state.teams || [];
+        }
+        this.state.selected_team = this.state.teams.length ? this.state.teams[0] : false;
     }
 
     onCompanyChange(companyId) {
@@ -46,7 +49,7 @@ export class CrmShareTargetItem extends ShareTargetItem {
     get context() {
         return {
             ...super.context,
-            default_team_id: this.state.selected_team.id,
+            default_team_id: this.state.selected_team?.id,
         };
     }
 

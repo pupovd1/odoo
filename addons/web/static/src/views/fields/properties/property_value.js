@@ -1,4 +1,4 @@
-import { Component, t, useProps } from "@odoo/owl";
+import { Component, t, usePlugin, useProps } from "@odoo/owl";
 import { CheckBox } from "@web/core/checkbox/checkbox";
 import { getCurrency } from "@web/core/currency";
 import { DateTimeInput } from "@web/core/datetime/datetime_input";
@@ -14,6 +14,7 @@ import {
     serializeDateTime,
 } from "@web/core/l10n/dates";
 import { _t } from "@web/core/l10n/translation";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { SignatureViewer } from "@web/core/signature/signature_viewer";
 import { AvatarTag } from "@web/core/tags_list/avatar_tag";
 import { BadgeTag } from "@web/core/tags_list/badge_tag";
@@ -104,6 +105,7 @@ export class PropertyValue extends Component {
 
         this.orm = useService("orm");
         this.action = useService("action");
+        this.offlinePlugin = usePlugin(OfflinePlugin);
 
         this.openMany2X = useOpenMany2XRecord({
             resModel: this.props.model,
@@ -326,16 +328,34 @@ export class PropertyValue extends Component {
                 // Make a RPC call to resolve the display name of the record.
                 newValue = await this._nameGet(newValue.id);
             } else if (newValue && !newValue.id && newValue.display_name) {
-                const result = await this.orm.call(
-                    this.props.comodel,
-                    "name_create",
-                    [newValue.display_name],
-                    {
-                        context: this.props.context,
-                    }
-                );
-                newValue.id = result[0];
-                newValue.display_name = result[1];
+                if (this.offlinePlugin.isOffline()) {
+                    const tempId = this.offlinePlugin.nextTempId();
+                    this.offlinePlugin.scheduleORM(
+                        this.props.comodel,
+                        "name_create",
+                        [newValue.display_name],
+                        { context: this.props.context },
+                        {
+                            extras: {
+                                timeStamp: Date.now(),
+                                tempId,
+                                displayName: newValue.display_name,
+                            },
+                        }
+                    );
+                    newValue.id = tempId;
+                } else {
+                    const result = await this.orm.call(
+                        this.props.comodel,
+                        "name_create",
+                        [newValue.display_name],
+                        {
+                            context: this.props.context,
+                        }
+                    );
+                    newValue.id = result[0];
+                    newValue.display_name = result[1];
+                }
             }
 
             if (this.props.type === "many2many" && newValue) {

@@ -1,6 +1,7 @@
 import { Domain } from "@web/core/domain";
 import { ActivityMenu } from "@mail/core/web/activity_menu";
 import { patch } from "@web/core/utils/patch";
+import { _t } from "@web/core/l10n/translation";
 
 patch(ActivityMenu.prototype, {
     availableViews(group) {
@@ -19,7 +20,6 @@ patch(ActivityMenu.prototype, {
     },
 
     openActivityGroup(group, filter = "all", newWindow) {
-        // fetch the data from the button otherwise fetch the ones from the parent (.o_ActivityMenuView_activityGroup).
         const context = {};
         if (group.model === "crm.lead") {
             this.dropdown.close();
@@ -33,11 +33,18 @@ patch(ActivityMenu.prototype, {
             } else {
                 context["search_default_activities_upcoming_all"] = 1;
             }
-            // Necessary because activity_ids of mail.activity.mixin has auto_join
-            // So, duplicates are faking the count and "Load more" doesn't show up
             context["force_search_count"] = 1;
             this.action.loadAction("crm.crm_lead_action_my_activities").then((action) => {
-                // to show lost leads in the activity
+                if (this.env.services.offline?.offline) {
+                    const actionId = action.id;
+                    if (!this.env.services.offline.isAvailableOffline(actionId)) {
+                        this.env.services.notification?.add(
+                            _t("My Activities is not available offline. Open it online first."),
+                            { type: "warning" }
+                        );
+                        return;
+                    }
+                }
                 action.domain = Domain.and([
                     action.domain || [],
                     [["active", "in", [true, false]]],

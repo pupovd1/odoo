@@ -604,6 +604,27 @@ export class Record extends DataPoint {
         }
         const context = getFieldContext(this, fieldName);
         if (!resId && displayName !== undefined) {
+            // Offline: keep a temporary display-only value; name_create is queued for sync.
+            if (this.model.offlinePlugin.isOffline()) {
+                const tempId = this.model.offlinePlugin.nextTempId();
+                this.model.offlinePlugin.scheduleORM(
+                    resModel,
+                    "name_create",
+                    [displayName],
+                    { context },
+                    {
+                        extras: {
+                            timeStamp: Date.now(),
+                            tempId,
+                            displayName: displayName,
+                            actionName: this.model.env?.config?.actionName,
+                            actionId: this.model.env?.config?.actionId,
+                            viewType: this.model.env?.config?.viewType,
+                        },
+                    }
+                );
+                return { id: tempId, display_name: displayName, offline_pending: true };
+            }
             const pair = await this.model.orm.call(resModel, "name_create", [displayName], {
                 context,
             });
@@ -799,7 +820,8 @@ export class Record extends DataPoint {
         for (const [fieldName, value] of Object.entries(values)) {
             const field = this.fields[fieldName];
             switch (field.type) {
-                case "many2many": {
+                case "many2many":
+                case "one2many": {
                     if (value) {
                         result[fieldName] = {};
                         if (changes) {
@@ -816,6 +838,17 @@ export class Record extends DataPoint {
                 }
                 case "many2one": {
                     result[fieldName] = value;
+                    break;
+                }
+                case "binary": {
+                    // Store metadata only in systray; payload stays in record changes / blob store
+                    if (value && typeof value === "object") {
+                        result[fieldName] = {
+                            display_name: value.filename || value.name || _t("File"),
+                        };
+                    } else {
+                        result[fieldName] = value;
+                    }
                     break;
                 }
                 default:

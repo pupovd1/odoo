@@ -23,9 +23,11 @@ import {
     signal,
     t,
     useEffect,
+    usePlugin,
     useProps,
 } from "@odoo/owl";
 import { deepCopy } from "@web/core/utils/objects";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 
 export class PropertiesField extends Component {
     static template = "web.PropertiesField";
@@ -45,6 +47,7 @@ export class PropertiesField extends Component {
     setup() {
         this.notification = useService("notification");
         this.orm = useService("orm");
+        this.offlinePlugin = usePlugin(OfflinePlugin);
         this.dialogService = useService("dialog");
         this.popover = usePopover(PropertyDefinition, {
             closeOnClickAway: this.checkPopoverClose,
@@ -729,6 +732,10 @@ export class PropertiesField extends Component {
      */
     async checkDefinitionWriteAccess() {
         if (!this.definitionRecordId || !this.definitionRecordModel) {
+            return false;
+        }
+        // Definition edits are not supported offline.
+        if (this.offlinePlugin.isOffline()) {
             return false;
         }
 

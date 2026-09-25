@@ -447,13 +447,14 @@ export class Many2XAutocomplete extends Component {
             }
         }
 
-        // Only add action suggestions if online!
-        if (!this.offlinePlugin.isOffline()) {
-            for (const action of this.actionSuggestions) {
-                const enabled = action.enabled ?? (() => true);
-                if (enabled({ request, records })) {
-                    suggestions.push(action.build(request));
-                }
+        // Action suggestions: all when online; only quick-create when offline.
+        for (const action of this.actionSuggestions) {
+            if (this.offlinePlugin.isOffline() && !action.availableOffline) {
+                continue;
+            }
+            const enabled = action.enabled ?? (() => true);
+            if (enabled({ request, records })) {
+                suggestions.push(action.build(request));
             }
         }
 
@@ -466,6 +467,7 @@ export class Many2XAutocomplete extends Component {
                 // create
                 enabled: this.addCreateSuggestion.bind(this),
                 build: this.buildCreateSuggestion.bind(this),
+                availableOffline: true,
             },
             {
                 // create and edit

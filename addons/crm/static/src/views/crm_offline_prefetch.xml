@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-name="crm.OfflinePrefetch">
+        <button type="button"
+                class="btn btn-secondary o_crm_offline_prefetch"
+                t-att-disabled="this.isDisabled"
+                t-on-click="this.onPrefetch"
+                t-att-title="this.state.lastResult ? ('Last prefetch: ' + new Date(this.state.lastResult.at).toLocaleString()) : 'Download pipeline for offline use'">
+            <i class="oi me-1" t-att-data-icon="this.state.running ? 'autorenew' : 'cloud_download'" t-att-class="this.state.running ? 'oi-spin' : ''"/>
+            <t t-out="this.buttonLabel"/>
+        </button>
+    </t>
+</templates>

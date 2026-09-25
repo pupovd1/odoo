@@ -12,6 +12,7 @@
                                 type="button"
                                 class="btn btn-secondary"
                                 t-att-class="control.class"
+                                data-available-offline=""
                                 t-on-click.stop.prevent="() => this.onAdd({ context: control.context })"
                             >
                                 <t t-out="control.string"/>

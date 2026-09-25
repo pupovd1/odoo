@@ -1,5 +1,6 @@
 import { Store } from "@mail/core/common/store_service";
 import { MENU_TABS } from "@mail/core/public_web/messaging_menu/messaging_menu_model";
+import { OfflineActivityDialog } from "@mail/core/web/offline_activity_dialog";
 import { browser } from "@web/core/browser/browser";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
@@ -104,6 +105,15 @@ const StorePatch = {
      * @param {number|undefined} defaultActivityTypeId
      */
     async scheduleActivity(resModel, resIds, defaultActivityTypeId = undefined) {
+        const offline = this.env.services.offline;
+        if (offline?.offline) {
+            this.env.services.dialog.add(OfflineActivityDialog, {
+                resModel,
+                resIds,
+                displayName: _t("Activity"),
+            });
+            return;
+        }
         const context = {
             active_model: resModel,
             active_ids: resIds,

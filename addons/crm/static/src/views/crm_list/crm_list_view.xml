@@ -3,8 +3,11 @@
     <t t-name="crm.List.Buttons" t-inherit="web.ListView.Buttons" t-inherit-mode="primary">
         <xpath expr="." position="inside">
             <t t-if="this.env.searchModel.context.show_lead_gen_button">
-                <LeadGenerationDropdown/>
+                <LeadGenerationDropdown onCreate="() => this.createRecord()"/>
             </t>
+            <CrmOfflinePrefetch
+                getDomain="() => this.model.root.domain"
+                getContext="() => this.props.context"/>
         </xpath>
     </t>
 </templates>

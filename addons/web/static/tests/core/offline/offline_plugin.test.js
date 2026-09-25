@@ -532,3 +532,80 @@ test("syncORM ConnectionLost", async () => {
         },
     });
 });
+
+test("scheduleHTTP and sync HTTP queue", async () => {
+    const setOffline = mockOffline();
+    onRpc("/mail/message/post", () => {
+        expect.step("message_post");
+        return { store_data: {}, message_id: 1 };
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+
+    await setOffline(true);
+    offline.scheduleHTTP(
+        "/mail/message/post",
+        { thread_id: 1, thread_model: "crm.lead", post_data: { body: "hi" } },
+        { extras: { timeStamp: 1, displayName: "Note" } }
+    );
+    expect(offline.hasScheduledCalls).toBe(true);
+    expect(Object.keys(offline._httpToSync()).length).toBe(1);
+
+    await setOffline(false);
+    await runAllTimers();
+    await expect.waitForSteps(["message_post"]);
+    expect(offline.hasScheduledCalls).toBe(false);
+});
+
+test("scheduleORM dependsOn waits for parent create", async () => {
+    const setOffline = mockOffline();
+    let createId = 100;
+    onRpc("partner", "web_save", ({ args }) => {
+        expect.step(`web_save:${JSON.stringify(args[0])}`);
+        if (!args[0].length) {
+            return [{ id: ++createId }];
+        }
+        return [{ id: args[0][0] }];
+    });
+    onRpc("partner", "message_post", ({ args }) => {
+        expect.step(`message_post:${args[0][0]}`);
+        return true;
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+
+    await setOffline(true);
+    const parentKey = offline.scheduleORM(
+        "partner",
+        "web_save",
+        [[], { name: "New" }],
+        {},
+        { extras: { timeStamp: 1 } }
+    );
+    offline.scheduleORM(
+        "partner",
+        "message_post",
+        [[parentKey], { body: "note" }],
+        {},
+        { extras: { timeStamp: 2, dependsOn: parentKey } }
+    );
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(1500);
+    await runAllTimers();
+    await expect.waitForSteps(["web_save:[]", "message_post:101"]);
+});
+
+test("storeBlob and removeBlob", async () => {
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    const key = "blob-test-1";
+    await offline.storeBlob(key, { name: "a.txt", base64: "YQ==" });
+    const data = await offline.getBlob(key);
+    expect(data.name).toBe("a.txt");
+    await offline.removeBlob(key);
+    expect(await offline.getBlob(key)).toBe(undefined);
+});
