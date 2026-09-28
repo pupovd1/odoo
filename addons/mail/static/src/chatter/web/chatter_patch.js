@@ -390,61 +390,96 @@ const chatterPatch = {
         if (!params.thread_model || !params.thread_id) {
             return;
         }
-        this._syncedMessagePosts.push({
-            thread_model: params.thread_model,
-            thread_id: params.thread_id,
-            temporary_id: params.context?.temporary_id,
-        });
+        const temporaryId = params.context?.temporary_id;
+        const alreadyQueued = this._syncedMessagePosts.some(
+            (entry) =>
+                entry.thread_model === params.thread_model &&
+                entry.thread_id === params.thread_id &&
+                entry.temporary_id === temporaryId
+        );
+        if (!alreadyQueued) {
+            this._syncedMessagePosts.push({
+                thread_model: params.thread_model,
+                thread_id: params.thread_id,
+                temporary_id: temporaryId,
+                result: detail.result,
+            });
+        }
         this._reloadSyncedMessages();
     },
 
+    /**
+     * Apply queued posts for the current thread. Entries stay until the
+     * optimistic note has been replaced, so a later visit can retry.
+     */
     _reloadSyncedMessages() {
         const thread = this.state.thread;
         if (!thread || isOfflineTempId(thread.id) || !this._syncedMessagePosts.length) {
             return;
         }
-        const matches = this._syncedMessagePosts.filter(
-            (entry) => entry.thread_model === thread.model && entry.thread_id === thread.id
-        );
-        if (!matches.length) {
-            return;
+        const applied = [];
+        for (const entry of this._syncedMessagePosts) {
+            if (entry.thread_model !== thread.model || entry.thread_id !== thread.id) {
+                continue;
+            }
+            if (this._replaceSyncedMessage(thread, entry)) {
+                applied.push(entry);
+            }
         }
-        this._syncedMessagePosts = this._syncedMessagePosts.filter(
-            (entry) => !matches.includes(entry)
-        );
-        this._applySyncedMessages(thread, matches);
+        if (applied.length) {
+            this._syncedMessagePosts = this._syncedMessagePosts.filter(
+                (entry) => !applied.includes(entry)
+            );
+        }
     },
 
-    async _applySyncedMessages(thread, matches) {
-        const known = new Set(thread.persistentMessages.map((message) => message.id));
-        if (thread.status === "loading") {
-            await thread.isLoadedPromise;
+    /**
+     * Swap the pending note for the message the post RPC already returned.
+     * Does not refetch: fetchNewMessages clears an isLoaded thread that has
+     * no persistent messages yet, which drops the optimistic note if that
+     * request fails.
+     * @returns {boolean} true when the real message is on the thread and the
+     * pending copy is gone
+     */
+    _replaceSyncedMessage(thread, entry) {
+        const messageId = entry.result?.message_id;
+        if (!messageId) {
+            return false;
         }
-        if (!this.state.thread?.eq(thread)) {
-            return;
+        if (entry.result.store_data) {
+            this.store.insert(entry.result.store_data);
         }
-        await thread.fetchNewMessages();
-        if (!this.state.thread?.eq(thread)) {
-            return;
+        const message = this.store["mail.message"].get(messageId);
+        if (!message) {
+            return false;
         }
-        const arrived = [...thread.persistentMessages].some((message) => !known.has(message.id));
-        if (!arrived) {
-            return;
+        const tmp =
+            entry.temporary_id !== undefined
+                ? this.store["mail.message"].get(entry.temporary_id)
+                : undefined;
+        if (thread.messages.findIndex((item) => item.eq(message)) === -1) {
+            thread.addOrReplaceMessage(message, tmp);
         }
-        for (const { temporary_id } of matches) {
-            if (temporary_id === undefined) {
-                continue;
-            }
-            const tmp = this.store["mail.message"].get(temporary_id);
-            if (!tmp) {
-                continue;
-            }
+        if (thread.messages.findIndex((item) => item.eq(message)) === -1) {
+            return false;
+        }
+        if (tmp && !tmp.eq(message)) {
             const index = thread.messages.findIndex((item) => item.eq(tmp));
             if (index !== -1) {
                 thread.messages.splice(index, 1);
             }
-            tmp.delete();
+            if (tmp.exists()) {
+                tmp.delete();
+            }
         }
+        const tmpStillShown =
+            tmp &&
+            tmp.exists() &&
+            !tmp.eq(message) &&
+            thread.messages.findIndex((item) => item.eq(tmp)) !== -1;
+        return (
+            !tmpStillShown && thread.messages.findIndex((item) => item.eq(message)) !== -1
+        );
     },
 
     /**
