@@ -1252,9 +1252,61 @@ export class Record extends DataPoint {
         this._activeFieldsToRestore = undefined;
     }
 
+    /**
+     * Replace an offline placeholder with the server id once sync has remapped it.
+     * The form keeps the placeholder until this runs, so a later save would
+     * otherwise post another web_save([]).
+     * @returns {boolean}
+     */
+    _adoptSyncedId(seen = new Set()) {
+        if (seen.has(this)) {
+            return false;
+        }
+        seen.add(this);
+        let changed = false;
+        const placeholder = isOfflineTempId(this.resId)
+            ? this.resId
+            : isOfflineTempId(this._offlineTempId)
+              ? this._offlineTempId
+              : false;
+        if (placeholder) {
+            const resolved = this.model.offlinePlugin.resolveId(placeholder);
+            if (resolved && resolved !== placeholder && !isOfflineTempId(resolved)) {
+                const resIds = (this.config.resIds || []).map((id) =>
+                    id === placeholder ? resolved : id
+                );
+                if (!resIds.includes(resolved)) {
+                    resIds.push(resolved);
+                }
+                this.config.resId = resolved;
+                this.config.resIds = resIds;
+                this._offlineTempId = undefined;
+                this._offlineId = undefined;
+                this._offlineTimeStamp = undefined;
+                this._offlineChanges = undefined;
+                changed = true;
+            }
+        }
+        for (const fieldName in this.activeFields || {}) {
+            const field = this.fields[fieldName];
+            if (!field || !["one2many", "many2many"].includes(field.type)) {
+                continue;
+            }
+            for (const record of this.data[fieldName]?.records || []) {
+                if (record._adoptSyncedId?.(seen)) {
+                    changed = true;
+                }
+            }
+        }
+        return changed;
+    }
+
     async _save({ reload = true, onError, nextId } = {}) {
         if (this.model._closeUrgentSaveNotification) {
             this.model._closeUrgentSaveNotification();
+        }
+        if (this._adoptSyncedId()) {
+            this.model.bus.trigger("update");
         }
         const serverResId = this.resId && !isOfflineTempId(this.resId) ? this.resId : false;
         const creation = !serverResId;
@@ -1361,8 +1413,9 @@ export class Record extends DataPoint {
             next_id: nextId,
         };
         let records = [];
-        // A temp id is not a server id. Queue the write so name_create / the parent
-        // create are ordered and remapped, instead of posting the placeholder.
+        // A placeholder that sync has not remapped yet must update the queued
+        // create. Once resolveId knows the server id, _adoptSyncedId already
+        // switched this record onto it and this branch is skipped.
         if (
             isOfflineTempId(this.resId) ||
             collectOfflineTempIds(changes).size ||
@@ -1443,6 +1496,7 @@ export class Record extends DataPoint {
     }
 
     _offlineSave() {
+        this._adoptSyncedId();
         this._offlineChanges = markRaw({ ...(this._offlineChanges || {}), ...this._changes });
         const offlineChanges = this._getChanges(this._offlineChanges);
         delete offlineChanges.id; // id never changes, and should not be written

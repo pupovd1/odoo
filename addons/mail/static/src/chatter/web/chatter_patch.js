@@ -504,6 +504,32 @@ const chatterPatch = {
         }
     },
 
+    /**
+     * Save a new record, then run onReady once it has an id.
+     * A failed save keeps onThreadCreated so the next successful save retries.
+     */
+    async _openAfterRecordExists(onReady) {
+        if (this.state.thread.id) {
+            return onReady(this.state.thread);
+        }
+        if (!this.webChatterProps.saveRecord) {
+            return;
+        }
+        this.onThreadCreated = onReady;
+        const saved = await this.webChatterProps.saveRecord();
+        if (!saved) {
+            return;
+        }
+        const resId = this.webChatterProps.record?.resId;
+        if (this.onThreadCreated && resId && !this.state.thread?.id) {
+            this.changeThread(this.threadModel(), resId);
+        } else if (this.onThreadCreated && this.state.thread?.id) {
+            const pending = this.onThreadCreated;
+            this.onThreadCreated = null;
+            await pending(this.state.thread);
+        }
+    },
+
     async scheduleActivity() {
         this.closeSearch();
         const schedule = async (thread) => {
@@ -513,16 +539,7 @@ const chatterPatch = {
                 await this.reloadParentView();
             }
         };
-        if (!this.state.thread.id) {
-            await this.webChatterProps.saveRecord?.();
-            const resId = this.webChatterProps.record?.resId;
-            if (resId && !this.state.thread?.id) {
-                this.changeThread(this.threadModel(), resId);
-            }
-        }
-        if (this.state.thread?.id) {
-            await schedule(this.state.thread);
-        }
+        await this._openAfterRecordExists(schedule);
     },
 
     toggleActivities() {
@@ -549,16 +566,7 @@ const chatterPatch = {
                 this.state.composerType = mode;
             }
         };
-        if (!this.state.thread.id) {
-            await this.webChatterProps.saveRecord?.();
-            const resId = this.webChatterProps.record?.resId;
-            if (resId && !this.state.thread?.id) {
-                this.changeThread(this.threadModel(), resId);
-            }
-        }
-        if (this.state.thread?.id) {
-            await toggle();
-        }
+        await this._openAfterRecordExists(toggle);
     },
 
     toggleScheduledMessages() {

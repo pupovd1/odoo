@@ -1,10 +1,10 @@
 // @ts-check
 
-import { EventBus, markRaw, usePlugin, toRaw } from "@odoo/owl";
+import { EventBus, markRaw, onWillUnmount, usePlugin, toRaw } from "@odoo/owl";
 import { makeContext } from "@web/core/context";
 import { Domain } from "@web/core/domain";
 import { WarningDialog } from "@web/core/errors/error_dialogs";
-import { ConnectionLostError } from "@web/core/network/rpc";
+import { ConnectionLostError, rpcBus } from "@web/core/network/rpc";
 import { shallowEqual } from "@web/core/utils/arrays";
 import { KeepLast, Mutex } from "@web/core/utils/concurrency";
 import { deepCopy, pick } from "@web/core/utils/objects";
@@ -174,6 +174,40 @@ export class RelationalModel extends Model {
 
         this._urgentSave = false;
         this.couldNotLoadRootOffline = false;
+
+        const onOfflineSync = () => {
+            if (this._adoptSyncedOfflineIds(this.root)) {
+                this.bus.trigger("update");
+            }
+        };
+        rpcBus.addEventListener("OFFLINE-SYNC", onOfflineSync);
+        onWillUnmount(() => rpcBus.removeEventListener("OFFLINE-SYNC", onOfflineSync));
+    }
+
+    /**
+     * Point open records at server ids that offline sync has already remapped.
+     * @param {DataPoint | null | undefined} datapoint
+     * @returns {boolean}
+     */
+    _adoptSyncedOfflineIds(datapoint) {
+        if (!datapoint) {
+            return false;
+        }
+        let changed = false;
+        if (datapoint._adoptSyncedId?.()) {
+            changed = true;
+        }
+        for (const record of datapoint.records || []) {
+            if (record._adoptSyncedId?.()) {
+                changed = true;
+            }
+        }
+        for (const group of datapoint.groups || []) {
+            if (this._adoptSyncedOfflineIds(group.list)) {
+                changed = true;
+            }
+        }
+        return changed;
     }
 
     // -------------------------------------------------------------------------

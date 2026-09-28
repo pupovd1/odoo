@@ -107,12 +107,16 @@ const StorePatch = {
      */
     async scheduleActivity(resModel, resIds, defaultActivityTypeId = undefined) {
         const offline = this.env.services.offline;
-        if (offline?.offline) {
-            const ids = Array.isArray(resIds) ? resIds : [];
-            const tempIds = ids.filter((id) => isOfflineTempId(id));
+        const ids = Array.isArray(resIds)
+            ? resIds.map((id) => (offline?.resolveId ? offline.resolveId(id) : id))
+            : resIds;
+        const tempIds = Array.isArray(ids) ? ids.filter((id) => isOfflineTempId(id)) : [];
+        // A placeholder is not a server id. Keep the offline dialog until sync
+        // replaces it, including after the browser is back online.
+        if (offline?.offline || tempIds.length) {
             this.env.services.dialog.add(OfflineActivityDialog, {
                 resModel,
-                resIds: ids,
+                resIds: Array.isArray(ids) ? ids : [],
                 displayName: _t("Activity"),
                 dependsOn: tempIds.length === 1 ? tempIds[0] : tempIds.length ? tempIds : undefined,
             });
@@ -120,8 +124,8 @@ const StorePatch = {
         }
         const context = {
             active_model: resModel,
-            active_ids: resIds,
-            active_id: resIds[0],
+            active_ids: ids,
+            active_id: Array.isArray(ids) ? ids[0] : undefined,
             ...(defaultActivityTypeId !== undefined
                 ? { default_activity_type_id: defaultActivityTypeId }
                 : {}),
