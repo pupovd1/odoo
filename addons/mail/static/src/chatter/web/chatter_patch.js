@@ -21,9 +21,10 @@ import { Dropdown } from "@web/core/dropdown/dropdown";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { useCustomDropzone } from "@web/core/dropzone/dropzone_hook";
 import { _t } from "@web/core/l10n/translation";
-import { rpc } from "@web/core/network/rpc";
+import { rpc, rpcBus } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { KeepLast } from "@web/core/utils/concurrency";
-import { useService } from "@web/core/utils/hooks";
+import { useBus, useService } from "@web/core/utils/hooks";
 import { patch } from "@web/core/utils/patch";
 import { Record } from "@web/model/relational_model/record";
 import { FileUploader } from "@web/views/fields/file_handler";
@@ -103,6 +104,8 @@ const chatterPatch = {
             showScheduledMessages: true,
         });
         this.dialog = useService("dialog");
+        this._syncedMessagePosts = [];
+        useBus(rpcBus, "OFFLINE-SYNC", (ev) => this._onOfflineMessageSynced(ev.detail));
         this.messageSearch = useMessageSearch();
         this.attachmentUploader = useAttachmentUploader(this.thread);
         this.followerListDropdown = useDropdownState();
@@ -327,16 +330,135 @@ const chatterPatch = {
     },
 
     changeThread(threadModel, threadId) {
+        this._carryOfflineMessages(this.state.thread, threadModel, threadId);
         super.changeThread(...arguments);
         this.discardAttachmentSelection();
         if (threadId === false) {
             this.state.composerType = false;
-        } else {
-            this.onThreadCreated?.(this.state.thread);
+            // Leaving the unsaved record. Do not open the composer or activity
+            // dialog on whatever record is shown next.
             this.onThreadCreated = null;
+            this._pendingThreadRecord = undefined;
+        } else {
+            if (this._shouldOpenPendingThread(threadId)) {
+                this.onThreadCreated(this.state.thread);
+            }
+            this.onThreadCreated = null;
+            this._pendingThreadRecord = undefined;
             this.messageSearch.thread = this.state.thread;
             this.closeSearch();
+            this._reloadSyncedMessages();
         }
+    },
+
+    /**
+     * Pending notes live on the placeholder thread. Moving them keeps them
+     * visible when the form switches to the server id.
+     */
+    _carryOfflineMessages(previous, threadModel, threadId) {
+        if (
+            !previous ||
+            !isOfflineTempId(previous.id) ||
+            !threadId ||
+            threadId === previous.id ||
+            previous.model !== threadModel
+        ) {
+            return;
+        }
+        const next = this.store["mail.thread"].insert({ model: threadModel, id: threadId });
+        const pending = [...previous.messages].filter(
+            (message) => message.isPending && !message.is_transient
+        );
+        for (const message of pending) {
+            const index = previous.messages.findIndex((item) => item.eq(message));
+            if (index !== -1) {
+                previous.messages.splice(index, 1);
+            }
+            message.res_id = threadId;
+            message.thread = next;
+            if (next.messages.findIndex((item) => item.eq(message)) === -1) {
+                next.messages.push(message);
+            }
+        }
+    },
+
+    _onOfflineMessageSynced(detail) {
+        if (detail?.route !== "/mail/message/post") {
+            return;
+        }
+        const params = detail.params || {};
+        if (!params.thread_model || !params.thread_id) {
+            return;
+        }
+        this._syncedMessagePosts.push({
+            thread_model: params.thread_model,
+            thread_id: params.thread_id,
+            temporary_id: params.context?.temporary_id,
+        });
+        this._reloadSyncedMessages();
+    },
+
+    _reloadSyncedMessages() {
+        const thread = this.state.thread;
+        if (!thread || isOfflineTempId(thread.id) || !this._syncedMessagePosts.length) {
+            return;
+        }
+        const matches = this._syncedMessagePosts.filter(
+            (entry) => entry.thread_model === thread.model && entry.thread_id === thread.id
+        );
+        if (!matches.length) {
+            return;
+        }
+        this._syncedMessagePosts = this._syncedMessagePosts.filter(
+            (entry) => !matches.includes(entry)
+        );
+        this._applySyncedMessages(thread, matches);
+    },
+
+    async _applySyncedMessages(thread, matches) {
+        const known = new Set(thread.persistentMessages.map((message) => message.id));
+        if (thread.status === "loading") {
+            await thread.isLoadedPromise;
+        }
+        if (!this.state.thread?.eq(thread)) {
+            return;
+        }
+        await thread.fetchNewMessages();
+        if (!this.state.thread?.eq(thread)) {
+            return;
+        }
+        const arrived = [...thread.persistentMessages].some((message) => !known.has(message.id));
+        if (!arrived) {
+            return;
+        }
+        for (const { temporary_id } of matches) {
+            if (temporary_id === undefined) {
+                continue;
+            }
+            const tmp = this.store["mail.message"].get(temporary_id);
+            if (!tmp) {
+                continue;
+            }
+            const index = thread.messages.findIndex((item) => item.eq(tmp));
+            if (index !== -1) {
+                thread.messages.splice(index, 1);
+            }
+            tmp.delete();
+        }
+    },
+
+    /**
+     * A failed save keeps the callback for this record only. A later thread
+     * whose id is not this record's id belongs to another lead.
+     */
+    _shouldOpenPendingThread(threadId) {
+        if (!this.onThreadCreated) {
+            return false;
+        }
+        if (!this._pendingThreadRecord) {
+            return true;
+        }
+        return this._pendingThreadRecord.resId === threadId;
     },
 
     closeSearch() {
@@ -506,7 +628,8 @@ const chatterPatch = {
 
     /**
      * Save a new record, then run onReady once it has an id.
-     * A failed save keeps onThreadCreated so the next successful save retries.
+     * A failed save keeps the callback for this record. Discarding it or
+     * opening another record clears the callback in changeThread.
      */
     async _openAfterRecordExists(onReady) {
         if (this.state.thread.id) {
@@ -515,9 +638,12 @@ const chatterPatch = {
         if (!this.webChatterProps.saveRecord) {
             return;
         }
+        const record = this.webChatterProps.record;
         this.onThreadCreated = onReady;
+        this._pendingThreadRecord = undefined;
         const saved = await this.webChatterProps.saveRecord();
         if (!saved) {
+            this._pendingThreadRecord = record;
             return;
         }
         const resId = this.webChatterProps.record?.resId;

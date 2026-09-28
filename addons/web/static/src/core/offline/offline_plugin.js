@@ -790,7 +790,7 @@ export class OfflinePlugin extends Plugin {
                         }
                     }
                     const params = this._remapIds(value.params);
-                    await rpc(value.route, params, { silent: true });
+                    const result = await rpc(value.route, params, { silent: true });
                     if (value.extras.blobKeys?.length) {
                         for (const blobKey of value.extras.blobKeys) {
                             await this.removeBlob(blobKey);
@@ -798,6 +798,14 @@ export class OfflinePlugin extends Plugin {
                     }
                     this.removeScheduledHTTP(key);
                     progressed = true;
+                    // Same signal as ORM sync. Chatter reloads posted notes from it;
+                    // the form id was already adopted when the parent web_save synced.
+                    rpcBus.trigger("OFFLINE-SYNC", {
+                        route: value.route,
+                        params,
+                        result,
+                        key,
+                    });
                 } catch (e) {
                     if (e instanceof ConnectionLostError) {
                         return;
