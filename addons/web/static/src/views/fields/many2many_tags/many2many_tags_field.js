@@ -136,6 +136,7 @@ export class Many2ManyTagsField extends Component {
                         [name],
                         { context: this.props.context },
                         {
+                            id: tempId,
                             extras: {
                                 timeStamp: Date.now(),
                                 tempId,

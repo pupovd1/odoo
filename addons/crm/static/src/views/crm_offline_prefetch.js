@@ -3,10 +3,18 @@ import { _t } from "@web/core/l10n/translation";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { useService } from "@web/core/utils/hooks";
 import { browser } from "@web/core/browser/browser";
+import { parseXML } from "@web/core/utils/xml";
+import {
+    addFieldDependencies,
+    extractFieldsFromArchInfo,
+    getBasicEvalContext,
+    getFieldsSpec,
+} from "@web/model/relational_model/utils";
+import { loadSubViews } from "@web/views/form/form_controller";
+import { FormArchParser } from "@web/views/form/form_arch_parser";
 
 const PREFETCH_META_KEY = "crm.offline_prefetch_meta";
 const DEFAULT_FORM_CAP = 50;
-const PAGE_SIZE = 80;
 
 /**
  * Prefetch the current CRM pipeline into the offline RPC / visited caches.
@@ -26,6 +34,8 @@ export class CrmOfflinePrefetch extends Component {
     setup() {
         this.orm = useService("orm");
         this.notification = useService("notification");
+        this.viewService = useService("view");
+        this.ui = useService("ui");
         this.offlinePlugin = usePlugin(OfflinePlugin);
         this.state = proxy({
             running: false,
@@ -74,41 +84,26 @@ export class CrmOfflinePrefetch extends Component {
         const viewType = this.env.config?.viewType || "kanban";
 
         try {
-            // 1) Page through leads to fill RPC disk cache
-            let offset = 0;
-            let allIds = [];
-            let total = 0;
-            do {
-                const result = await this.orm
-                    .cache({ type: "disk", update: "always" })
-                    .webSearchRead("crm.lead", domain, {
-                        specification: {
-                            id: {},
-                            display_name: {},
-                            stage_id: { fields: { display_name: {} } },
-                            partner_id: { fields: { display_name: {} } },
-                            user_id: { fields: { display_name: {} } },
-                            tag_ids: { fields: { display_name: {}, color: {} } },
-                            expected_revenue: {},
-                            priority: {},
-                            activity_ids: {},
-                        },
-                        offset,
-                        limit: PAGE_SIZE,
-                        context,
-                    });
-                total = result.length || 0;
-                const ids = (result.records || []).map((r) => r.id);
-                allIds = allIds.concat(ids);
-                offset += PAGE_SIZE;
-                this.state.total = Math.min(
-                    allIds.length + (offset < total ? total - offset : 0),
-                    this.props.formCap
-                );
-                if (ids.length === 0) {
-                    break;
+            const model = this.env.model;
+            // Same RPC the open kanban/list will replay (grouped webReadGroup or
+            // ungrouped webSearchRead), not a hand-written smaller specification.
+            let allIds = model ? await this._cacheCurrentView(model) : [];
+            if (allIds.length < this.props.formCap) {
+                const moreIds = await this.orm.search("crm.lead", domain, {
+                    limit: this.props.formCap,
+                    context,
+                });
+                const seen = new Set(allIds);
+                for (const id of moreIds) {
+                    if (!seen.has(id)) {
+                        seen.add(id);
+                        allIds.push(id);
+                    }
+                    if (allIds.length >= this.props.formCap) {
+                        break;
+                    }
                 }
-            } while (offset < total && allIds.length < this.props.formCap * 2);
+            }
 
             // Mark current search as available offline
             if (actionId && this.env.searchModel?.getCurrentSearch) {
@@ -130,38 +125,16 @@ export class CrmOfflinePrefetch extends Component {
                 this._warmM2X("res.partner", [], 40),
             ]);
 
-            // 3) Prefetch forms (capped)
+            // 3) Prefetch forms with the specification the form view webReads
             const formIds = allIds.slice(0, this.props.formCap);
             this.state.total = formIds.length;
+            const formKwargs = await this._formWebReadKwargs("crm.lead", context);
             for (let i = 0; i < formIds.length; i++) {
                 const resId = formIds[i];
                 await this.orm.cache({ type: "disk", update: "always" }).webRead(
                     "crm.lead",
                     [resId],
-                    {
-                        specification: {
-                            id: {},
-                            display_name: {},
-                            name: {},
-                            stage_id: { fields: { display_name: {} } },
-                            partner_id: { fields: { display_name: {} } },
-                            user_id: { fields: { display_name: {} } },
-                            team_id: { fields: { display_name: {} } },
-                            tag_ids: { fields: { display_name: {}, color: {} } },
-                            email_from: {},
-                            phone: {},
-                            expected_revenue: {},
-                            probability: {},
-                            priority: {},
-                            description: {},
-                            type: {},
-                            active: {},
-                            won_status: {},
-                            company_currency: {},
-                            lead_properties: {},
-                        },
-                        context,
-                    }
+                    formKwargs
                 );
                 if (actionId) {
                     await this.offlinePlugin.setAvailableOffline(actionId, "form", { resId });
@@ -186,6 +159,101 @@ export class CrmOfflinePrefetch extends Component {
         } finally {
             this.state.running = false;
         }
+    }
+
+    /**
+     * Issue the RPC the current list/kanban model will issue on reload.
+     * @param {import("@web/model/relational_model/relational_model").RelationalModel} model
+     * @returns {Promise<number[]>}
+     */
+    async _cacheCurrentView(model) {
+        const cache = { type: "disk", update: "always" };
+        const config = model.config;
+        const ids = [];
+        const seen = new Set();
+        const pushIds = (pageIds) => {
+            for (const id of pageIds) {
+                if (id && !seen.has(id)) {
+                    seen.add(id);
+                    ids.push(id);
+                }
+            }
+        };
+        if (config.groupBy?.length) {
+            const result = await model._webReadGroup(config, cache);
+            pushIds(this._idsFromGroups(result.groups));
+            return ids;
+        }
+        const limit = config.limit || model.initialLimit || 80;
+        let offset = config.offset || 0;
+        let total = Infinity;
+        while (offset < total && ids.length < this.props.formCap) {
+            const pageConfig = offset === (config.offset || 0) ? config : { ...config, offset, limit };
+            const result = await model._loadUngroupedList(pageConfig, cache);
+            total = result.length || 0;
+            const pageIds = (result.records || []).map((record) => record.id);
+            if (!pageIds.length) {
+                break;
+            }
+            pushIds(pageIds);
+            if (pageIds.length < limit) {
+                break;
+            }
+            offset += limit;
+        }
+        return ids;
+    }
+
+    _idsFromGroups(groups, acc = []) {
+        for (const group of groups || []) {
+            for (const record of group.__records || []) {
+                if (record?.id) {
+                    acc.push(record.id);
+                }
+            }
+            if (group.__groups?.groups) {
+                this._idsFromGroups(group.__groups.groups, acc);
+            }
+        }
+        return acc;
+    }
+
+    /**
+     * Build the webRead kwargs the form controller uses for this action.
+     * Field order follows the form arch, including subviews and display_name.
+     */
+    async _formWebReadKwargs(resModel, context) {
+        const views = this.env.config?.views || [];
+        const formDesc = views.find((view) => view[1] === "form");
+        const viewId = formDesc ? formDesc[0] : false;
+        const { fields, relatedModels, views: loaded } = await this.viewService.loadViews({
+            resModel,
+            views: [[viewId, "form"]],
+            context,
+        });
+        const archInfo = new FormArchParser().parse(
+            parseXML(loaded.form.arch),
+            relatedModels,
+            resModel
+        );
+        await loadSubViews(
+            archInfo.fieldNodes,
+            fields,
+            context,
+            resModel,
+            this.viewService,
+            this.ui.isSmall
+        );
+        const extracted = extractFieldsFromArchInfo(archInfo, fields);
+        addFieldDependencies(extracted.activeFields, extracted.fields, [
+            { name: "display_name", type: "char", readonly: true },
+        ]);
+        const specification = getFieldsSpec(
+            extracted.activeFields,
+            extracted.fields,
+            getBasicEvalContext({ context })
+        );
+        return { context, specification };
     }
 
     async _warmM2X(resModel, domain, limit = 80) {

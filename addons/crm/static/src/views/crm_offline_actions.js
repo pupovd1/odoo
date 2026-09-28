@@ -1,4 +1,5 @@
 import { ConnectionLostError } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { _t } from "@web/core/l10n/translation";
 import { patch } from "@web/core/utils/patch";
 import { ActionPlugin } from "@web/webclient/actions/action_plugin";
@@ -15,13 +16,17 @@ export const CRM_OFFLINE_METHODS = new Set([
 ]);
 
 function scheduleCrmButton(env, params) {
-    const ids = params.resIds?.length ? params.resIds : params.resId ? [params.resId] : [];
+    const ids = (params.resIds?.length ? params.resIds : params.resId ? [params.resId] : []).filter(
+        (id) => id
+    );
+    const tempIds = ids.filter((id) => isOfflineTempId(id));
     env.services.offline.scheduleORM(
         params.resModel,
         params.name,
         [ids],
         { context: params.context || {} },
         {
+            dependsOn: tempIds.length ? tempIds : undefined,
             extras: {
                 timeStamp: Date.now(),
                 displayName: params.displayName || params.name,

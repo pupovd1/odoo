@@ -599,6 +599,68 @@ test("scheduleORM dependsOn waits for parent create", async () => {
     await expect.waitForSteps(["web_save:[]", "message_post:101"]);
 });
 
+test("older web_save waits for name_create and remaps the temp id", async () => {
+    const setOffline = mockOffline();
+    const tempId = "offline_tmp_partner";
+    onRpc("res.partner", "name_create", () => {
+        expect.step("name_create");
+        return [5, "Acme"];
+    });
+    onRpc("crm.lead", "web_save", ({ args }) => {
+        expect.step(`web_save:${args[1].partner_id}`);
+        return [{ id: 9 }];
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await setOffline(true);
+
+    offline.scheduleORM("res.partner", "name_create", ["Acme"], {}, {
+        id: tempId,
+        extras: { timeStamp: 50, tempId },
+    });
+    offline.scheduleORM(
+        "crm.lead",
+        "web_save",
+        [[], { partner_id: tempId }],
+        {},
+        { extras: { timeStamp: 1, dependsOn: tempId } }
+    );
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(1500);
+    await runAllTimers();
+    await expect.waitForSteps(["name_create", "web_save:5"]);
+});
+
+test("id remap is reloaded from IndexedDB after the in-memory map is cleared", async () => {
+    const setOffline = mockOffline();
+    const tempId = "offline_tmp_reload";
+    onRpc("res.partner", "name_create", () => [15, "Acme"]);
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await setOffline(true);
+    offline.scheduleORM("res.partner", "name_create", ["Acme"], {}, {
+        id: tempId,
+        extras: { timeStamp: 1, tempId },
+    });
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(500);
+    await runAllTimers();
+
+    expect(offline.resolveId(tempId)).toBe(15);
+    const map = offline._idRemap();
+    for (const key of Object.keys(map)) {
+        delete map[key];
+    }
+    expect(offline.resolveId(tempId)).toBe(tempId);
+    await offline._loadIdRemap();
+    expect(offline.resolveId(tempId)).toBe(15);
+});
+
 test("storeBlob and removeBlob", async () => {
     await makeTestApp();
     const offline = getService(OfflinePlugin);

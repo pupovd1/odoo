@@ -2,6 +2,7 @@ import { markRaw, markup, toRaw } from "@odoo/owl";
 import { serializeDate, serializeDateTime } from "@web/core/l10n/dates";
 import { _t } from "@web/core/l10n/translation";
 import { ConnectionLostError, RPCError } from "@web/core/network/rpc";
+import { collectOfflineTempIds, isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { evaluateBooleanExpr } from "@web/core/py_js/py";
 import { pick } from "@web/core/utils/objects";
 import { DataPoint } from "./datapoint";
@@ -607,12 +608,14 @@ export class Record extends DataPoint {
             // Offline: keep a temporary display-only value; name_create is queued for sync.
             if (this.model.offlinePlugin.isOffline()) {
                 const tempId = this.model.offlinePlugin.nextTempId();
+                // Queue key is the temp id so the parent web_save can dependsOn it.
                 this.model.offlinePlugin.scheduleORM(
                     resModel,
                     "name_create",
                     [displayName],
                     { context },
                     {
+                        id: tempId,
                         extras: {
                             timeStamp: Date.now(),
                             tempId,
@@ -863,8 +866,8 @@ export class Record extends DataPoint {
      * @param {FieldSpecifications} [params]
      */
     _getChanges(changes = this._changes, { withReadonly } = {}) {
-        if (!this.resId) {
-            // Apply the initial changes when the record is new
+        if (!this.resId || isOfflineTempId(this.resId)) {
+            // Apply the initial changes when the record is new (including an offline temp id).
             changes = { ...this._values, ...changes };
         }
 
@@ -1253,7 +1256,8 @@ export class Record extends DataPoint {
         if (this.model._closeUrgentSaveNotification) {
             this.model._closeUrgentSaveNotification();
         }
-        const creation = !this.resId;
+        const serverResId = this.resId && !isOfflineTempId(this.resId) ? this.resId : false;
+        const creation = !serverResId;
         if (nextId) {
             if (creation) {
                 throw new Error("Cannot set nextId on a new record");
@@ -1309,7 +1313,7 @@ export class Record extends DataPoint {
             const params = {
                 model: this.resModel,
                 method: "web_save",
-                args: [this.resId ? [this.resId] : [], changes],
+                args: [serverResId ? [serverResId] : [], changes],
                 kwargs: { context: this.context, specification: {} },
             };
             const data = { jsonrpc: "2.0", method: "call", params };
@@ -1357,10 +1361,23 @@ export class Record extends DataPoint {
             next_id: nextId,
         };
         let records = [];
+        // A temp id is not a server id. Queue the write so name_create / the parent
+        // create are ordered and remapped, instead of posting the placeholder.
+        if (
+            isOfflineTempId(this.resId) ||
+            collectOfflineTempIds(changes).size ||
+            (this.model.offlinePlugin.isOffline() && !serverResId)
+        ) {
+            const saved = this._offlineSave();
+            if (!this.model.offlinePlugin.isOffline()) {
+                this.model.offlinePlugin._syncAll();
+            }
+            return saved;
+        }
         try {
             records = await this.model.orm.webSave(
                 this.resModel,
-                this.resId ? [this.resId] : [],
+                serverResId ? [serverResId] : [],
                 changes,
                 kwargs
             );
@@ -1410,10 +1427,14 @@ export class Record extends DataPoint {
         if ("id" in this.activeFields && records) {
             this._values.id = records[0].id;
         }
-        for (const fieldName in this.activeFields) {
-            const field = this.fields[fieldName];
-            if (["one2many", "many2many"].includes(field.type) && !field.relatedPropertyField) {
-                this._values[fieldName]?._clearCommands();
+        // Keep x2many commands until the server confirms the save. Offline coalescing
+        // rebuilds the queued web_save from those commands.
+        if (records) {
+            for (const fieldName in this.activeFields) {
+                const field = this.fields[fieldName];
+                if (["one2many", "many2many"].includes(field.type) && !field.relatedPropertyField) {
+                    this._values[fieldName]?._clearCommands();
+                }
             }
         }
         this._changes = markRaw({});
@@ -1426,14 +1447,37 @@ export class Record extends DataPoint {
         const offlineChanges = this._getChanges(this._offlineChanges);
         delete offlineChanges.id; // id never changes, and should not be written
 
-        this._offlineTimeStamp = this._offlineTimeStamp || Date.now();
+        const serverResId = this.resId && !isOfflineTempId(this.resId) ? this.resId : false;
+        if (!serverResId) {
+            this._offlineTempId =
+                this._offlineTempId ||
+                (isOfflineTempId(this.resId) ? this.resId : this.model.offlinePlugin.nextTempId());
+        }
+
+        const dependsOn = [...collectOfflineTempIds(offlineChanges)].filter(
+            (id) => id !== this._offlineTempId && id !== this._offlineId
+        );
+        // Keep the first edit's place in the queue, but never stay ahead of a
+        // name_create this payload now references.
+        let timeStamp = this._offlineTimeStamp || Date.now();
+        const queued = this.model.offlinePlugin._ormToSync();
+        for (const dep of dependsOn) {
+            const depTs = queued[dep]?.value?.extras?.timeStamp || 0;
+            if (depTs >= timeStamp) {
+                timeStamp = depTs + 1;
+            }
+        }
+        this._offlineTimeStamp = timeStamp;
+
+        const queueId = serverResId ? this._offlineId : this._offlineId || this._offlineTempId;
         this._offlineId = this.model.offlinePlugin.scheduleORM(
             this.resModel,
             "web_save",
-            [this.resId ? [this.resId] : [], offlineChanges],
+            [serverResId ? [serverResId] : [], offlineChanges],
             { context: this.context, specification: {} }, //Here for the kwargs we don't need the specification or the next_id
             {
-                id: this._offlineId,
+                id: queueId,
+                dependsOn: dependsOn.length ? dependsOn : undefined,
                 extras: {
                     ...getScheduleORMExtras(this.model, [this]),
                     changes: this._formatOfflineValues(this._offlineChanges),
@@ -1441,10 +1485,19 @@ export class Record extends DataPoint {
                         pick(this._values, ...Object.keys(this._offlineChanges)),
                         { changes: false }
                     ),
-                    timeStamp: this._offlineTimeStamp,
+                    tempId: this._offlineTempId,
+                    timeStamp,
                 },
             }
         );
+
+        if (!serverResId) {
+            // Expose the placeholder so chatter, object buttons, and activities
+            // target this queued create instead of false / [].
+            this.config.resId = this._offlineTempId;
+            const kept = (this.config.resIds || []).filter((id) => id && !isOfflineTempId(id));
+            this.config.resIds = kept.length ? [...kept, this._offlineTempId] : [this._offlineTempId];
+        }
 
         this._commitSave();
         return true;

@@ -15,9 +15,9 @@ export class OfflineActivityDialog extends Component {
     props = useProps({
         close: t.function(),
         resModel: t.string(),
-        resIds: t.array(t.number()),
+        resIds: t.array(t.or([t.number(), t.string()])),
         displayName: t.string().optional(),
-        dependsOn: t.string().optional(),
+        dependsOn: t.or([t.string(), t.array(t.string())]).optional(),
     });
 
     setup() {

@@ -513,11 +513,15 @@ const chatterPatch = {
                 await this.reloadParentView();
             }
         };
-        if (this.state.thread.id) {
-            schedule(this.state.thread);
-        } else {
-            this.onThreadCreated = schedule;
-            this.webChatterProps.saveRecord?.();
+        if (!this.state.thread.id) {
+            await this.webChatterProps.saveRecord?.();
+            const resId = this.webChatterProps.record?.resId;
+            if (resId && !this.state.thread?.id) {
+                this.changeThread(this.threadModel(), resId);
+            }
+        }
+        if (this.state.thread?.id) {
+            await schedule(this.state.thread);
         }
     },
 
@@ -545,11 +549,15 @@ const chatterPatch = {
                 this.state.composerType = mode;
             }
         };
-        if (this.state.thread.id) {
-            toggle();
-        } else {
-            this.onThreadCreated = toggle;
-            this.webChatterProps.saveRecord?.();
+        if (!this.state.thread.id) {
+            await this.webChatterProps.saveRecord?.();
+            const resId = this.webChatterProps.record?.resId;
+            if (resId && !this.state.thread?.id) {
+                this.changeThread(this.threadModel(), resId);
+            }
+        }
+        if (this.state.thread?.id) {
+            await toggle();
         }
     },
 

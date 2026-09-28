@@ -14,6 +14,7 @@ import { isMobileOS } from "@web/core/browser/feature_detection";
 import { DebugModePlugin } from "@web/core/debug_mode_plugin";
 import { _t } from "@web/core/l10n/translation";
 import { ConnectionLostError, rpc } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { registry } from "@web/core/registry";
 import { user } from "@web/core/user";
 import { Mutex } from "@web/core/utils/concurrency";
@@ -208,13 +209,24 @@ export class Store extends BaseStore {
             } catch (err) {
                 if (err instanceof ConnectionLostError) {
                     const offlinePlugin = this.env.services.offline;
-                    offlinePlugin.scheduleHTTP("/mail/message/post", params, {
+                    const paramsToQueue = { ...params };
+                    if (isOfflineTempId(paramsToQueue.thread_id)) {
+                        const resolved = offlinePlugin.resolveId(paramsToQueue.thread_id);
+                        if (resolved !== paramsToQueue.thread_id) {
+                            paramsToQueue.thread_id = resolved;
+                        }
+                    }
+                    // A string thread id is the parent web_save queue key. Numeric ids
+                    // already exist on the server and do not need a dependency.
+                    const dependsOn = isOfflineTempId(paramsToQueue.thread_id)
+                        ? paramsToQueue.thread_id
+                        : undefined;
+                    offlinePlugin.scheduleHTTP("/mail/message/post", paramsToQueue, {
                         extras: {
                             timeStamp: Date.now(),
                             displayName: _t("Message"),
                             actionName: _t("Messages"),
-                            dependsOn:
-                                typeof params.thread_id === "string" ? params.thread_id : undefined,
+                            dependsOn,
                         },
                     });
                     if (tmpMessage) {

@@ -3,6 +3,7 @@ import "@crm/views/crm_offline_actions";
 import { registry } from "@web/core/registry";
 import { formView } from "@web/views/form/form_view";
 import { ConnectionLostError } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { _t } from "@web/core/l10n/translation";
 
 class CrmFormRecord extends formView.Model.Record {
@@ -64,28 +65,37 @@ class CrmFormController extends formView.Controller {
             items.duplicate.availableOffline = true;
             const originalCallback = items.duplicate.callback;
             items.duplicate.callback = async () => {
+                const record = this.model.root;
+                const queueCopy = () => {
+                    const id = record.resId;
+                    this.env.services.offline.scheduleORM(
+                        record.resModel,
+                        "copy",
+                        [[id]],
+                        { context: record.context },
+                        {
+                            dependsOn: isOfflineTempId(id) ? id : undefined,
+                            extras: {
+                                timeStamp: Date.now(),
+                                displayName: record.data.display_name || _t("Lead"),
+                                actionName: _t("CRM"),
+                            },
+                        }
+                    );
+                    this.env.services.notification.add(
+                        _t("Duplicate queued for sync when back online"),
+                        { type: "info" }
+                    );
+                };
+                if (isOfflineTempId(record.resId)) {
+                    queueCopy();
+                    return;
+                }
                 try {
                     await originalCallback();
                 } catch (e) {
                     if (e instanceof ConnectionLostError) {
-                        const record = this.model.root;
-                        this.env.services.offline.scheduleORM(
-                            record.resModel,
-                            "copy",
-                            [[record.resId]],
-                            { context: record.context },
-                            {
-                                extras: {
-                                    timeStamp: Date.now(),
-                                    displayName: record.data.display_name || _t("Lead"),
-                                    actionName: _t("CRM"),
-                                },
-                            }
-                        );
-                        this.env.services.notification.add(
-                            _t("Duplicate queued for sync when back online"),
-                            { type: "info" }
-                        );
+                        queueCopy();
                         return;
                     }
                     throw e;

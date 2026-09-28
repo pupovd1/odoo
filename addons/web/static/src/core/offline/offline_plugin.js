@@ -46,6 +46,8 @@ export class OfflinePlugin extends Plugin {
     static HTTP_SYNC_TABLE_NAME = "http-to-sync";
     static BLOB_TABLE_NAME = "offline-blobs";
     static MANY2X_TABLE_PREFIX = "many2x_";
+    /** Temporary id -> real id, kept across reloads so later saves can resolve. */
+    static ID_REMAP_TABLE_NAME = "id-remap";
     /** Placeholder id prefix for records created offline before sync. */
     static TEMP_ID_PREFIX = "offline_tmp_";
 
@@ -117,7 +119,11 @@ export class OfflinePlugin extends Plugin {
             this._visited.set({});
         });
 
-        Promise.all([this._updateScheduledORMList(), this._updateScheduledHTTPList()]).then(
+        Promise.all([
+            this._updateScheduledORMList(),
+            this._updateScheduledHTTPList(),
+            this._loadIdRemap(),
+        ]).then(
             async () => {
                 if (!this.isOffline()) {
                     // wait a bit for the webclient to be started before synchronizing
@@ -289,7 +295,7 @@ export class OfflinePlugin extends Plugin {
      * @param {Object} kwargs
      * @param {Object} [options]
      * @param {string} [options.id] stable queue key (reuse to coalesce)
-     * @param {string} [options.dependsOn] queue key that must sync first; ids are remapped after
+     * @param {string|string[]} [options.dependsOn] queue key(s) that must sync first; ids are remapped after
      * @param {Object} [options.extras] UI metadata (timeStamp, displayName, error, ...)
      * @param {Function} [options.rewrite] optional (value, idRemap) => value before replay
      */
@@ -344,7 +350,7 @@ export class OfflinePlugin extends Plugin {
      * @param {Object} params
      * @param {Object} [options]
      * @param {string} [options.id]
-     * @param {string} [options.dependsOn]
+     * @param {string|string[]} [options.dependsOn]
      * @param {string[]} [options.blobKeys] keys in the blob store to upload first
      * @param {Object} [options.extras]
      */
@@ -434,6 +440,30 @@ export class OfflinePlugin extends Plugin {
             return id;
         }
         return this._idRemap()[id] ?? id;
+    }
+
+    /**
+     * Remember a temporary id (or queue key) -> server id, including across reloads.
+     * @param {string|number} fromId
+     * @param {number|string} realId
+     */
+    _rememberId(fromId, realId) {
+        if (fromId === undefined || fromId === null || fromId === false || realId == null) {
+            return;
+        }
+        if (fromId === realId) {
+            return;
+        }
+        this._idRemap()[fromId] = realId;
+        return this._idb.write(OfflinePlugin.ID_REMAP_TABLE_NAME, String(fromId), realId);
+    }
+
+    async _loadIdRemap() {
+        const table = (await this._idb.getAllEntries(OfflinePlugin.ID_REMAP_TABLE_NAME)) || [];
+        const map = this._idRemap();
+        for (const { key, value } of table) {
+            map[key] = value;
+        }
     }
 
     get hasScheduledCalls() {
@@ -593,6 +623,7 @@ export class OfflinePlugin extends Plugin {
             this.syncingORM.set(true);
             await this._updateScheduledORMList();
             await this._updateScheduledHTTPList();
+            await this._loadIdRemap();
             try {
                 await this._syncORMEntries();
                 await this._syncHTTPEntries();
@@ -632,16 +663,26 @@ export class OfflinePlugin extends Plugin {
         return walk(data);
     }
 
+    _dependencyKeys(dependsOn) {
+        if (!dependsOn) {
+            return [];
+        }
+        return Array.isArray(dependsOn) ? dependsOn : [dependsOn];
+    }
+
     _sortedReadyEntries(entries) {
+        const remap = this._idRemap();
+        const ormQueue = this._ormToSync();
         return Object.values(entries)
             .filter(({ value }) => {
                 if (value.extras.error) {
                     return false;
                 }
-                const dep = value.extras.dependsOn;
-                if (dep && !(dep in this._idRemap()) && this._ormToSync()[dep]) {
-                    // dependency still pending (not yet synced)
-                    return false;
+                for (const dep of this._dependencyKeys(value.extras.dependsOn)) {
+                    // Still queued and not yet turned into a server id.
+                    if (!(dep in remap) && ormQueue[dep]) {
+                        return false;
+                    }
                 }
                 return true;
             })
@@ -681,21 +722,21 @@ export class OfflinePlugin extends Plugin {
                             ? result[0]?.id ?? result[0]
                             : result?.id ?? result;
                         if (newId) {
-                            this._idRemap()[key] = newId;
+                            await this._rememberId(key, newId);
                             if (value.extras.tempId) {
-                                this._idRemap()[value.extras.tempId] = newId;
+                                await this._rememberId(value.extras.tempId, newId);
                             }
                         }
                     }
                     if (value.method === "name_create" && Array.isArray(result)) {
-                        this._idRemap()[key] = result[0];
+                        await this._rememberId(key, result[0]);
                         if (value.extras.tempId) {
-                            this._idRemap()[value.extras.tempId] = result[0];
+                            await this._rememberId(value.extras.tempId, result[0]);
                         }
                     }
                     if (value.method === "copy" && result) {
                         const newId = Array.isArray(result) ? result[0] : result;
-                        this._idRemap()[key] = newId;
+                        await this._rememberId(key, newId);
                     }
                     this.removeScheduledORM(key);
                     progressed = true;
@@ -795,6 +836,38 @@ export class OfflinePlugin extends Plugin {
             )
         );
     }
+}
+
+/** @param {unknown} id */
+export function isOfflineTempId(id) {
+    return typeof id === "string" && id.startsWith(OfflinePlugin.TEMP_ID_PREFIX);
+}
+
+/**
+ * Collect temporary ids embedded in an offline write payload.
+ * @param {unknown} value
+ * @param {Set<string>} [acc]
+ * @returns {Set<string>}
+ */
+export function collectOfflineTempIds(value, acc = new Set()) {
+    if (typeof value === "string") {
+        if (isOfflineTempId(value)) {
+            acc.add(value);
+        }
+        return acc;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            collectOfflineTempIds(item, acc);
+        }
+        return acc;
+    }
+    if (value && typeof value === "object") {
+        for (const item of Object.values(value)) {
+            collectOfflineTempIds(item, acc);
+        }
+    }
+    return acc;
 }
 
 services.add(OfflinePlugin);

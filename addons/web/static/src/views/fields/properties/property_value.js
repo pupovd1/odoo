@@ -336,6 +336,7 @@ export class PropertyValue extends Component {
                         [newValue.display_name],
                         { context: this.props.context },
                         {
+                            id: tempId,
                             extras: {
                                 timeStamp: Date.now(),
                                 tempId,

@@ -195,3 +195,39 @@ test("[Offline] scheduleORM for convert is queued", async () => {
         )
     ).toBe(true);
 });
+
+test("Make available offline uses the kanban group read and the form specification", async () => {
+    const reads = [];
+    onRpc("crm.lead", "web_read_group", () => {
+        reads.push("web_read_group");
+    });
+    onRpc("crm.lead", "web_read", ({ kwargs }) => {
+        reads.push(kwargs.specification);
+    });
+    onRpc("crm.lead", "web_search_read", ({ kwargs }) => {
+        reads.push(kwargs.specification);
+    });
+
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1, { viewType: "form", props: { resId: 1 } });
+    await animationFrame();
+    const formRead = reads.find((entry) => entry && entry.name);
+    expect(formRead).toBeTruthy();
+    expect("email_from" in formRead).toBe(false);
+
+    reads.length = 0;
+    await getService("action").doAction(1);
+    await animationFrame();
+    reads.length = 0;
+
+    await contains(".o_crm_offline_prefetch").click();
+    await animationFrame();
+
+    expect(reads.includes("web_read_group")).toBe(true);
+    const prefetched = reads.filter((entry) => entry && typeof entry === "object");
+    expect(prefetched.length).toBeGreaterThan(0);
+    expect(prefetched.every((spec) => JSON.stringify(spec) === JSON.stringify(formRead))).toBe(
+        true
+    );
+    expect(reads.some((entry) => entry && entry.email_from)).toBe(false);
+});

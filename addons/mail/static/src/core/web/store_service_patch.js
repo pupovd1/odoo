@@ -5,6 +5,7 @@ import { browser } from "@web/core/browser/browser";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { patch } from "@web/core/utils/patch";
 
 let unread_store;
@@ -107,10 +108,13 @@ const StorePatch = {
     async scheduleActivity(resModel, resIds, defaultActivityTypeId = undefined) {
         const offline = this.env.services.offline;
         if (offline?.offline) {
+            const ids = Array.isArray(resIds) ? resIds : [];
+            const tempIds = ids.filter((id) => isOfflineTempId(id));
             this.env.services.dialog.add(OfflineActivityDialog, {
                 resModel,
-                resIds,
+                resIds: ids,
                 displayName: _t("Activity"),
+                dependsOn: tempIds.length === 1 ? tempIds[0] : tempIds.length ? tempIds : undefined,
             });
             return;
         }
