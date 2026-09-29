@@ -605,10 +605,17 @@ const chatterPatch = {
     },
 
     onPostCallback() {
-        if (this.hasParentReloadOnMessagePosted) {
+        const offline = this.store.env.services.offline?.isOffline?.();
+        if (this.hasParentReloadOnMessagePosted && !offline) {
             this.reloadParentView();
         }
         this.toggleComposer();
+        if (offline) {
+            // A reload would web-read a server that cannot be reached and can
+            // drop the note that was just saved locally.
+            this.state.jumpThreadPresent++;
+            return;
+        }
         super.onPostCallback();
     },
 
@@ -695,6 +702,9 @@ const chatterPatch = {
         this.closeSearch();
         const schedule = async (thread) => {
             await this.store.scheduleActivity(thread.model, [thread.id]);
+            if (this.store.env.services.offline?.isOffline?.()) {
+                return;
+            }
             this.load(thread, ["activities", "messages"]);
             if (this.webChatterProps.hasParentReloadOnActivityChanged) {
                 await this.reloadParentView();
@@ -715,7 +725,7 @@ const chatterPatch = {
             : [...selectedAttachmentIds, attachment.id];
     },
 
-    toggleComposer(mode = false, { force = false } = {}) {
+    async toggleComposer(mode = false, { force = false } = {}) {
         this.closeSearch();
         const toggle = async () => {
             if (!force && this.state.composerType === mode) {

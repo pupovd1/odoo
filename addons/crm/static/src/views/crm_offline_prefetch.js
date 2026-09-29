@@ -1,4 +1,4 @@
-import { Component, proxy, usePlugin } from "@odoo/owl";
+import { Component, proxy, t, usePlugin, useProps } from "@odoo/owl";
 import { _t } from "@web/core/l10n/translation";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { useService } from "@web/core/utils/hooks";
@@ -21,15 +21,11 @@ const DEFAULT_FORM_CAP = 50;
  */
 export class CrmOfflinePrefetch extends Component {
     static template = "crm.OfflinePrefetch";
-    static props = {
-        "*": true,
-        getDomain: { type: Function, optional: true },
-        getContext: { type: Function, optional: true },
-        formCap: { type: Number, optional: true },
-    };
-    static defaultProps = {
-        formCap: DEFAULT_FORM_CAP,
-    };
+    props = useProps({
+        getDomain: t.function().optional(),
+        getContext: t.function().optional(),
+        formCap: t.number().optional(DEFAULT_FORM_CAP),
+    });
 
     setup() {
         this.orm = useService("orm");
@@ -80,6 +76,8 @@ export class CrmOfflinePrefetch extends Component {
         this.state.progress = 0;
         const domain = this.props.getDomain?.() || [];
         const context = this.props.getContext?.() || {};
+        // Form web_read uses the action context. The kanban search context adds
+        // keys such as team_switcher_enabled, which would miss the form cache.
         const actionId = this.env.config?.actionId;
         const viewType = this.env.config?.viewType || "kanban";
 
@@ -128,7 +126,8 @@ export class CrmOfflinePrefetch extends Component {
             // 3) Prefetch forms with the specification the form view webReads
             const formIds = allIds.slice(0, this.props.formCap);
             this.state.total = formIds.length;
-            const formKwargs = await this._formWebReadKwargs("crm.lead", context);
+            const formContext = this.env.searchModel?.globalContext || context;
+            const formKwargs = await this._formWebReadKwargs("crm.lead", formContext);
             for (let i = 0; i < formIds.length; i++) {
                 const resId = formIds[i];
                 await this.orm.cache({ type: "disk", update: "always" }).webRead(

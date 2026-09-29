@@ -1,4 +1,4 @@
-import { Component, proxy, usePlugin } from "@odoo/owl";
+import { Component, proxy, t, usePlugin, useProps } from "@odoo/owl";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
@@ -22,10 +22,9 @@ export const MODULE_STATUS = {
 export class LeadGenerationDropdown extends Component {
     static template = "crm.lead_generation_dropdown";
     static components = { Dropdown, DropdownItem };
-    static props = {
-        "*": true,
-        onCreate: { type: Function, optional: true },
-    };
+    props = useProps({
+        onCreate: t.function().optional(),
+    });
 
     setup() {
         this.orm = useService("orm");

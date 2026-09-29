@@ -113,7 +113,7 @@ const StorePatch = {
         const tempIds = Array.isArray(ids) ? ids.filter((id) => isOfflineTempId(id)) : [];
         // A placeholder is not a server id. Keep the offline dialog until sync
         // replaces it, including after the browser is back online.
-        if (offline?.offline || tempIds.length) {
+        if (offline?.isOffline?.() || tempIds.length) {
             this.env.services.dialog.add(OfflineActivityDialog, {
                 resModel,
                 resIds: Array.isArray(ids) ? ids : [],

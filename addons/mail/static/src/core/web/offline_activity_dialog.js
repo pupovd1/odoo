@@ -1,4 +1,4 @@
-import { Component, proxy, t, usePlugin, useProps } from "@odoo/owl";
+import { Component, signal, t, usePlugin, useProps } from "@odoo/owl";
 import { Dialog } from "@web/core/dialog/dialog";
 import { _t } from "@web/core/l10n/translation";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
@@ -23,11 +23,10 @@ export class OfflineActivityDialog extends Component {
     setup() {
         this.offlinePlugin = usePlugin(OfflinePlugin);
         this.notification = useService("notification");
-        this.state = proxy({
-            summary: "",
-            note: "",
-            date_deadline: new Date().toISOString().slice(0, 10),
-        });
+        // t-model requires a signal. A plain object has no `set`.
+        this.summary = signal("");
+        this.note = signal("");
+        this.dateDeadline = signal(new Date().toISOString().slice(0, 10));
     }
 
     onConfirm() {
@@ -44,9 +43,9 @@ export class OfflineActivityDialog extends Component {
             "activity_schedule",
             [this.props.resIds],
             {
-                summary: this.state.summary || _t("Offline activity"),
-                note: this.state.note || false,
-                date_deadline: this.state.date_deadline,
+                summary: this.summary() || _t("Offline activity"),
+                note: this.note() || false,
+                date_deadline: this.dateDeadline(),
             },
             { extras }
         );

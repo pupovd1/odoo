@@ -23,6 +23,23 @@ import { session } from "@web/session";
 
 const IS_READY = Symbol("ready");
 
+/**
+ * IndexedDB can only store structured-cloneable values. Search facets are
+ * reactive records, so keep the plain data applySearch reads back.
+ */
+function cloneForIndexedDB(search) {
+    try {
+        return JSON.parse(JSON.stringify(search));
+    } catch {
+        return {
+            key: search?.key,
+            domain: search?.domain,
+            groupBys: search?.groupBys,
+            facets: [],
+        };
+    }
+}
+
 class FakeIndexedDB {
     // used in non secure context to disable the offline features as data can't be encrypted
     invalidate() {}
@@ -275,6 +292,7 @@ export class OfflinePlugin extends Plugin {
                 value = (await this._idb.read(this._visitedUITable(), key)) || {};
                 let count = value[search.key]?.count || 0;
                 search = value[search.key]?.search || search; // keep original search (no "Custom Filter")
+                search = cloneForIndexedDB(search);
                 delete value[search.key]; // delete and re-add to mark it as "last visited"
                 value[search.key] = { count: ++count, search };
             }

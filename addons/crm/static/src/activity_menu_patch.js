@@ -35,9 +35,15 @@ patch(ActivityMenu.prototype, {
             }
             context["force_search_count"] = 1;
             this.action.loadAction("crm.crm_lead_action_my_activities").then((action) => {
-                if (this.env.services.offline?.offline) {
+                if (this.env.services.offline?.isOffline()) {
                     const actionId = action.id;
-                    if (!this.env.services.offline.isAvailableOffline(actionId)) {
+                    const offline = this.env.services.offline;
+                    // The action id alone is not enough: the pipeline kanban must
+                    // have been opened, or this click loads views with no cache.
+                    const viewReady = action.views.some(([, viewType]) =>
+                        offline.isAvailableOffline(actionId, viewType)
+                    );
+                    if (!viewReady) {
                         this.env.services.notification?.add(
                             _t("My Activities is not available offline. Open it online first."),
                             { type: "warning" }

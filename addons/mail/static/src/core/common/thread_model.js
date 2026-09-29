@@ -555,14 +555,17 @@ export class Thread extends Record {
             return;
         }
         const after = this.getFetchNewMessagesAfter();
-        if (after === undefined && this.isLoaded) {
-            this.messages.splice(0, this.messages.length);
-        }
         let fetched = [];
         try {
             fetched = await this.fetchMessages({ fetchParams: { after }, routeParams });
         } catch {
+            // A failed reload must keep messages already on screen, including
+            // notes that were saved offline and have not synced yet.
             return;
+        }
+        if (after === undefined && this.isLoaded) {
+            const pending = this.messages.filter((message) => message.isPending);
+            this.messages.splice(0, this.messages.length, ...pending);
         }
         // feed messages
         // could have received a new message as notification during fetch
@@ -821,11 +824,19 @@ export class Thread extends Record {
             }
             tmpMsg = this.store["mail.message"].insert({
                 ...tmpData,
-                body: await generateEmojisOnHtml(body),
+                body: await generateEmojisOnHtml(body, {
+                    allowEmojiLoading: !this.store.env.services.offline?.isOffline?.(),
+                }),
                 isPending: true,
                 thread: this,
             });
             this.messages.push(tmpMsg);
+            // The thread view shows phantomMessages until the first load
+            // marks it mounted. A note posted before that must be on both.
+            if (this.phantomMessages.findIndex((message) => message.eq(tmpMsg)) === -1) {
+                this.phantomMessages.push(tmpMsg);
+            }
+            this.isLoaded = true;
             this.onNewSelfMessage(tmpMsg);
         }
         if (this.model !== "discuss.channel") {

@@ -1,6 +1,7 @@
 import { ConnectionLostError } from "@web/core/network/rpc";
 import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { _t } from "@web/core/l10n/translation";
+import { useEnv } from "@web/owl2/utils";
 import { patch } from "@web/core/utils/patch";
 import { ActionPlugin } from "@web/webclient/actions/action_plugin";
 
@@ -43,28 +44,27 @@ function scheduleCrmButton(env, params) {
 patch(ActionPlugin.prototype, {
     setup() {
         super.setup(...arguments);
-        const originalDoActionButton = this.doActionButton.bind(this);
+        // doActionButton is the action manager's function. The plugin has no
+        // this.env; the manager closed over its own env when the function was
+        // created. useEnv() is the plugin component's env.
+        const env = useEnv();
+        const originalDoActionButton = this.doActionButton;
         this.doActionButton = async (params, options = {}) => {
             const isCrmOfflineMethod =
                 params.type === "object" &&
                 params.resModel === "crm.lead" &&
                 CRM_OFFLINE_METHODS.has(params.name);
 
-            if (isCrmOfflineMethod && this.env.services.offline?.offline) {
-                scheduleCrmButton(this.env, params);
-                if (params.onClose) {
-                    await params.onClose();
-                }
+            if (isCrmOfflineMethod && env.services.offline?.isOffline()) {
+                scheduleCrmButton(env, params);
+                // Reloading the form would web_read a server that cannot be reached.
                 return;
             }
             try {
                 return await originalDoActionButton(params, options);
             } catch (e) {
                 if (e instanceof ConnectionLostError && isCrmOfflineMethod) {
-                    scheduleCrmButton(this.env, params);
-                    if (params.onClose) {
-                        await params.onClose();
-                    }
+                    scheduleCrmButton(env, params);
                     return;
                 }
                 throw e;

@@ -202,13 +202,19 @@ export class Store extends BaseStore {
      * @param {import("models").Message} tmpMessage the associated temporary message
      */
     async doMessagePost(params, tmpMessage) {
+        const offlinePlugin = this.env.services.offline;
+        if (offlinePlugin?.isOffline?.() && tmpMessage) {
+            tmpMessage.isPending = true;
+            tmpMessage.postFailMessage = _t(
+                "Message saved offline. It will sync when you are back online."
+            );
+        }
         return this.messagePostMutex.exec(async () => {
             let res;
             try {
                 res = await rpc("/mail/message/post", params, { silent: true });
             } catch (err) {
-                if (err instanceof ConnectionLostError) {
-                    const offlinePlugin = this.env.services.offline;
+                if (err instanceof ConnectionLostError || offlinePlugin?.isOffline?.()) {
                     const paramsToQueue = { ...params };
                     if (isOfflineTempId(paramsToQueue.thread_id)) {
                         const resolved = offlinePlugin.resolveId(paramsToQueue.thread_id);
@@ -693,7 +699,11 @@ export class Store extends BaseStore {
             thread,
         });
         postData = {
-            body: await generateEmojisOnHtml(body),
+            // Emoji data is a separate asset. Offline, that load rejects and
+            // then never settles, which would block the optimistic message.
+            body: await generateEmojisOnHtml(body, {
+                allowEmojiLoading: !this.env.services.offline?.isOffline?.(),
+            }),
             email_add_signature: emailAddSignature,
             message_type: "comment",
             partner_cc_emails: [],

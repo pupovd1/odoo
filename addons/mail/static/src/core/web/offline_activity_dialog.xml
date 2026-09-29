@@ -4,11 +4,11 @@
         <Dialog title.translate="Schedule Activity (Offline)" size="'md'">
             <div class="o_offline_activity_dialog d-flex flex-column gap-2">
                 <label class="fw-bold">Summary</label>
-                <input type="text" class="form-control" t-model="this.state.summary" data-available-offline="" placeholder="e.g. Call back"/>
+                <input type="text" class="form-control" t-model="this.summary" data-available-offline="" placeholder="e.g. Call back"/>
                 <label class="fw-bold">Deadline</label>
-                <input type="date" class="form-control" t-model="this.state.date_deadline" data-available-offline=""/>
+                <input type="date" class="form-control" t-model="this.dateDeadline" data-available-offline=""/>
                 <label class="fw-bold">Note</label>
-                <textarea class="form-control" rows="3" t-model="this.state.note" data-available-offline=""/>
+                <textarea class="form-control" rows="3" t-model="this.note" data-available-offline=""/>
             </div>
             <t t-set-slot="footer">
                 <button class="btn btn-primary" data-available-offline="" t-on-click="this.onConfirm">Schedule</button>
