@@ -1,0 +1,95 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "20.0"
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: odoo
+          POSTGRES_PASSWORD: odoo
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      ODOO_BROWSER_BIN: /usr/bin/google-chrome-stable
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            pkg-config \
+            libpq-dev \
+            libxml2-dev \
+            libxslt1-dev \
+            libldap2-dev \
+            libsasl2-dev \
+            libjpeg-dev \
+            zlib1g-dev \
+            libffi-dev \
+            libmagic1 \
+            fonts-dejavu-core
+          wget -q -O /tmp/chrome.deb https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+          sudo apt-get install -y /tmp/chrome.deb
+          google-chrome-stable --version
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install websocket-client
+
+      - name: Run the test suite
+        run: |
+          set -euo pipefail
+          desktop="@crm/crm_offline,@crm/crm_offline_e2e,@mail/offline_activity,@web/core/offline/offline_error,@web/core/offline/offline_plugin,@web/webclient/offline_systray"
+          mobile="@web/webclient/offline_systray"
+          tags="hoot/web/tests/test_js.py:WebSuite.test_unit_desktop[${desktop}],hoot/web/tests/test_js.py:MobileWebSuite.test_unit_mobile[${mobile}]"
+          python odoo-bin \
+            --addons-path=addons \
+            --data-dir="${RUNNER_TEMP}/odoo" \
+            --db_host=127.0.0.1 \
+            --db_port=5432 \
+            --db_user=odoo \
+            --db_password=odoo \
+            -d ci \
+            -i crm \
+            --without-demo=all \
+            --test-enable \
+            --stop-after-init \
+            --workers=0 \
+            --max-cron-threads=0 \
+            --http-port=8072 \
+            --log-level=runbot \
+            --test-tags "${tags}" \
+            2>&1 | tee "${RUNNER_TEMP}/odoo-test.log"
+          python -c 'import re,sys; text=open(sys.argv[1],encoding="utf-8",errors="replace").read(); counts=[int(n) for n in re.findall(r"Passed (\d+) tests", text)]; print("Hoot passed counts:", counts); raise SystemExit("Desktop and mobile runs must both execute tests" if len(counts) < 2 or any(n < 1 for n in counts) else None)' "${RUNNER_TEMP}/odoo-test.log"
