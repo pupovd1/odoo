@@ -74,33 +74,36 @@ class OfflineSystray extends Component {
     });
 
     _buildOrmItem(key, value) {
-        const timeStamp = formatDateTime(DateTime.fromMillis(value.extras.timeStamp));
+        const extras = value.extras || {};
+        const timeStamp = extras.timeStamp
+            ? formatDateTime(DateTime.fromMillis(extras.timeStamp))
+            : "";
         const item = {
             id: key,
             kind: "orm",
-            timeStamp: value.extras.timeStamp,
-            actionName: value.extras.actionName,
-            displayName: value.extras.displayName || value.model,
+            timeStamp: extras.timeStamp,
+            actionName: extras.actionName,
+            displayName: extras.displayName || value.model,
             clickable: this.isClickable(value),
-            error: value.extras.error,
-            canRetry: !!value.extras.error,
+            error: extras.error,
+            canRetry: !!extras.error,
             tooltip: {
                 timeStamp,
-                records: value.extras.displayNames || [],
+                records: extras.displayNames || [],
             },
             status: METHOD_STATUS[value.method] || STATUS.PENDING,
         };
         if (value.method === "web_save") {
             item.status = value.args[0].length ? STATUS.EDITED : STATUS.CREATED;
-            item.tooltip.changes = Object.entries(value.extras.changes || {}).map(([k, v]) => [
+            item.tooltip.changes = Object.entries(extras.changes || {}).map(([k, v]) => [
                 k,
                 v?.display_name ?? v,
             ]);
-            if (value.args[0].length && value.extras.originalValues) {
+            if (value.args[0].length && extras.originalValues) {
                 item.tooltip.changes = item.tooltip.changes.map((c) => [
                     c[0],
-                    value.extras.originalValues[c[0]]?.display_name ??
-                        JSON.stringify(value.extras.originalValues[c[0]]),
+                    extras.originalValues[c[0]]?.display_name ??
+                        JSON.stringify(extras.originalValues[c[0]]),
                     c[1],
                 ]);
             }
@@ -110,7 +113,10 @@ class OfflineSystray extends Component {
     }
 
     _buildHttpItem(key, value) {
-        const timeStamp = formatDateTime(DateTime.fromMillis(value.extras.timeStamp));
+        const extras = value.extras || {};
+        const timeStamp = extras.timeStamp
+            ? formatDateTime(DateTime.fromMillis(extras.timeStamp))
+            : "";
         let status = STATUS.PENDING;
         if (value.route.includes("message/post")) {
             status = STATUS.MESSAGE;
@@ -120,34 +126,35 @@ class OfflineSystray extends Component {
         return {
             id: key,
             kind: "http",
-            timeStamp: value.extras.timeStamp,
-            actionName: value.extras.actionName || _t("Messages"),
-            displayName: value.extras.displayName || value.route,
+            timeStamp: extras.timeStamp,
+            actionName: extras.actionName || _t("Messages"),
+            displayName: extras.displayName || value.route,
             clickable: false,
-            error: value.extras.error,
-            canRetry: !!value.extras.error,
+            error: extras.error,
+            canRetry: !!extras.error,
             status,
             tooltip: JSON.stringify({
                 timeStamp,
-                records: value.extras.displayNames || [],
+                records: extras.displayNames || [],
             }),
         };
     }
 
     isClickable(value) {
+        const extras = value.extras || {};
         const resId = value.args[0]?.length ? value.args[0][0] : false;
         return (
             value.method === "web_save" &&
-            value.extras.viewType === "form" &&
+            extras.viewType === "form" &&
             (!this.offlinePlugin.isOffline() ||
-                this.offlinePlugin.isAvailableOffline(value.extras.actionId, "form", resId))
+                this.offlinePlugin.isAvailableOffline(extras.actionId, "form", resId))
         );
     }
 
     inError = computed(
         () =>
-            Object.values(this.offlinePlugin._ormToSync()).find(({ value }) => value.extras.error) ||
-            Object.values(this.offlinePlugin._httpToSync()).find(({ value }) => value.extras.error)
+            Object.values(this.offlinePlugin._ormToSync()).find(({ value }) => value.extras?.error) ||
+            Object.values(this.offlinePlugin._httpToSync()).find(({ value }) => value.extras?.error)
     );
 
     get labelColor() {

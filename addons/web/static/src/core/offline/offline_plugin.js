@@ -325,9 +325,11 @@ export class OfflinePlugin extends Plugin {
         }
         // Keep the caller's extras object when there is no dependency. The
         // queue key is a hash of that object, and a new timeStamp changes it.
-        let extras = options.extras;
+        // An omitted extras must still be an object: JSON.stringify drops
+        // undefined, and sync reads extras.error / extras.timeStamp.
+        let extras = options.extras ?? {};
         if (options.dependsOn) {
-            extras = { ...options.extras, dependsOn: options.dependsOn };
+            extras = { ...extras, dependsOn: options.dependsOn };
         }
         const value = { model, method, args, kwargs, extras };
         const key = options.id ?? hashCode(JSON.stringify(value));
@@ -695,10 +697,11 @@ export class OfflinePlugin extends Plugin {
         const ormQueue = this._ormToSync();
         return Object.values(entries)
             .filter(({ value }) => {
-                if (value.extras.error) {
+                const extras = value.extras || {};
+                if (extras.error) {
                     return false;
                 }
-                for (const dep of this._dependencyKeys(value.extras.dependsOn)) {
+                for (const dep of this._dependencyKeys(extras.dependsOn)) {
                     // Still queued and not yet turned into a server id.
                     if (!(dep in remap) && ormQueue[dep]) {
                         return false;
@@ -706,7 +709,9 @@ export class OfflinePlugin extends Plugin {
                 }
                 return true;
             })
-            .sort((s1, s2) => s1.value.extras.timeStamp - s2.value.extras.timeStamp);
+            .sort(
+                (s1, s2) => (s1.value.extras?.timeStamp || 0) - (s2.value.extras?.timeStamp || 0)
+            );
     }
 
     async _syncORMEntries() {
@@ -847,11 +852,18 @@ export class OfflinePlugin extends Plugin {
         }
     }
 
+    _parseSyncValue(raw) {
+        const value = JSON.parse(raw);
+        // Rows queued before extras was always stored have no extras key.
+        value.extras ??= {};
+        return value;
+    }
+
     async _updateScheduledORMList() {
         const table = await this._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME);
         this._ormToSync.set(
             Object.fromEntries(
-                table.map((v) => [v.key, { key: v.key, value: JSON.parse(v.value) }])
+                table.map((v) => [v.key, { key: v.key, value: this._parseSyncValue(v.value) }])
             )
         );
     }
@@ -860,7 +872,7 @@ export class OfflinePlugin extends Plugin {
         const table = await this._idb.getAllEntries(OfflinePlugin.HTTP_SYNC_TABLE_NAME);
         this._httpToSync.set(
             Object.fromEntries(
-                table.map((v) => [v.key, { key: v.key, value: JSON.parse(v.value) }])
+                table.map((v) => [v.key, { key: v.key, value: this._parseSyncValue(v.value) }])
             )
         );
     }

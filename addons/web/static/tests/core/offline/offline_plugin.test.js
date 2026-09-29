@@ -393,11 +393,11 @@ test("scheduleORM", async () => {
                 model: "partner",
             },
         },
-        "7b1d3bb0": {
-            key: "7b1d3bb0",
+        f5b90cfd: {
+            key: "f5b90cfd",
             value: {
                 args: [22, 13],
-                extras: undefined,
+                extras: {},
                 kwargs: {
                     arg1: true,
                     arg2: false,
@@ -408,7 +408,7 @@ test("scheduleORM", async () => {
         },
     });
 
-    offline.removeScheduledORM("7b1d3bb0");
+    offline.removeScheduledORM("f5b90cfd");
     expect(offline._ormToSync()).toEqual({
         22: {
             key: 22,
