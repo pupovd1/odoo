@@ -10,7 +10,7 @@ import {
     mountWithCleanup,
     onRpc,
 } from "@web/../tests/web_test_helpers";
-import { expect, test } from "@odoo/hoot";
+import { expect, test, waitFor } from "@odoo/hoot";
 import { animationFrame } from "@odoo/hoot-mock";
 import { WebClient } from "@web/webclient/webclient";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
@@ -50,6 +50,18 @@ class Stage extends models.Model {
         { id: 1, name: "New" },
         { id: 2, name: "Won", is_won: true },
     ];
+}
+
+class Tag extends models.Model {
+    _name = "crm.tag";
+    name = fields.Char();
+    _records = [{ id: 1, name: "Hot" }];
+}
+
+class LostReason extends models.Model {
+    _name = "crm.lost.reason";
+    name = fields.Char();
+    _records = [{ id: 1, name: "Too expensive" }];
 }
 
 class Lead extends models.Model {
@@ -96,7 +108,7 @@ class Lead extends models.Model {
 }
 
 defineMailModels();
-defineModels([Users, Team, Stage, Lead]);
+defineModels([Users, Team, Stage, Tag, LostReason, Lead]);
 
 defineActions([
     {
@@ -153,7 +165,7 @@ test("[Offline] CRM team facet round-trip via getCurrentSearch", async () => {
     await animationFrame();
 
     // Offline: Generate becomes New
-    await contains("button", { text: "New" });
+    await waitFor("button", { text: "New" });
 });
 
 test("[Offline] Won button schedules ORM when offline", async () => {
@@ -212,7 +224,7 @@ test("Make available offline uses the kanban group read and the form specificati
     await getService("action").doAction(1, { viewType: "form", props: { resId: 1 } });
     await animationFrame();
     const formRead = reads.find((entry) => entry && entry.name);
-    expect(formRead).toBeTruthy();
+    expect(Boolean(formRead)).toBe(true);
     expect("email_from" in formRead).toBe(false);
 
     reads.length = 0;

@@ -323,9 +323,11 @@ export class OfflinePlugin extends Plugin {
                 _t("Offline features not available in a non-secure context")
             );
         }
-        const extras = { timeStamp: Date.now(), ...options.extras };
+        // Keep the caller's extras object when there is no dependency. The
+        // queue key is a hash of that object, and a new timeStamp changes it.
+        let extras = options.extras;
         if (options.dependsOn) {
-            extras.dependsOn = options.dependsOn;
+            extras = { ...options.extras, dependsOn: options.dependsOn };
         }
         const value = { model, method, args, kwargs, extras };
         const key = options.id ?? hashCode(JSON.stringify(value));

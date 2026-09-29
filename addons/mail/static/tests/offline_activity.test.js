@@ -1,8 +1,9 @@
 import { describe, expect, test } from "@odoo/hoot";
 import { animationFrame } from "@odoo/hoot-mock";
 import {
+    assignDialogTestEnv,
+    contains,
     getService,
-    makeMockEnv,
     mockOffline,
     mountWithCleanup,
 } from "@web/../tests/web_test_helpers";
@@ -14,10 +15,8 @@ defineMailModels();
 
 describe("mail offline", () => {
     test("[Offline] OfflineActivityDialog queues activity_schedule", async () => {
+        assignDialogTestEnv();
         mockOffline();
-        await makeMockEnv();
-        const offline = getService(OfflinePlugin);
-        offline.setOffline(true);
 
         let closed = false;
         await mountWithCleanup(OfflineActivityDialog, {
@@ -33,8 +32,9 @@ describe("mail offline", () => {
         await animationFrame();
         await expect(".o_offline_activity_dialog").toHaveCount(1);
 
-        // Confirm with default summary
-        document.querySelector(".modal-footer .btn-primary")?.click();
+        const offline = getService(OfflinePlugin);
+        offline.setOffline(true);
+        await contains(".modal-footer .btn-primary").click();
         await animationFrame();
 
         expect(closed).toBe(true);
