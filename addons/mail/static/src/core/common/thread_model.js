@@ -836,7 +836,13 @@ export class Thread extends Record {
             if (this.phantomMessages.findIndex((message) => message.eq(tmpMsg)) === -1) {
                 this.phantomMessages.push(tmpMsg);
             }
-            this.isLoaded = true;
+            // Discuss channels use isLoaded to mean history is already synced,
+            // so fetchNewMessages then relies on the bus. An optimistic post
+            // must not set it before that first fetch, or older messages never
+            // load. The pending note stays visible via phantomMessages.
+            if (this.model !== "discuss.channel") {
+                this.isLoaded = true;
+            }
             this.onNewSelfMessage(tmpMsg);
         }
         if (this.model !== "discuss.channel") {
