@@ -17,18 +17,18 @@ const viewRegistry = registry.category("views");
 const fieldRegistry = registry.category("fields");
 
 const validFieldTypes = {
-    binary: { availableOffline: false },
+    binary: { availableOffline: true },
     boolean: { availableOffline: true },
     json: { availableOffline: true },
     integer: { availableOffline: true },
     float: { availableOffline: true },
     monetary: { availableOffline: true },
-    properties: { availableOffline: false },
+    properties: { availableOffline: true },
     properties_definition: { availableOffline: false },
     reference: { availableOffline: false },
     many2one_reference: { availableOffline: false },
     many2one: { availableOffline: true },
-    one2many: { availableOffline: false },
+    one2many: { availableOffline: true },
     many2many: { availableOffline: true },
     selection: { availableOffline: true },
     date: { availableOffline: true },

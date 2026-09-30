@@ -54,10 +54,16 @@
                                 </div>
                                 <div>
                                     <button
+                                        t-if="element.canRetry"
+                                        class="oi oi-filled btn btn-link text-primary py-0" data-icon="refresh"
+                                        title="Retry sync"
+                                        data-available-offline=""
+                                        t-on-click.stop="() => this.retry(element.id, element.kind)"/>
+                                    <button
                                         class="oi oi-filled btn btn-link text-danger py-0" data-icon="delete"
                                         title="Discard offline changes"
                                         data-available-offline=""
-                                        t-on-click.stop="() => this.discard(element.id)"/>
+                                        t-on-click.stop="() => this.discard(element.id, element.kind)"/>
                                 </div>
                             </DropdownItem>
                         </t>

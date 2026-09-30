@@ -1,9 +1,11 @@
 import { Store } from "@mail/core/common/store_service";
 import { MENU_TABS } from "@mail/core/public_web/messaging_menu/messaging_menu_model";
+import { OfflineActivityDialog } from "@mail/core/web/offline_activity_dialog";
 import { browser } from "@web/core/browser/browser";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { useService } from "@web/core/utils/hooks";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { patch } from "@web/core/utils/patch";
 
 let unread_store;
@@ -104,10 +106,26 @@ const StorePatch = {
      * @param {number|undefined} defaultActivityTypeId
      */
     async scheduleActivity(resModel, resIds, defaultActivityTypeId = undefined) {
+        const offline = this.env.services.offline;
+        const ids = Array.isArray(resIds)
+            ? resIds.map((id) => (offline?.resolveId ? offline.resolveId(id) : id))
+            : resIds;
+        const tempIds = Array.isArray(ids) ? ids.filter((id) => isOfflineTempId(id)) : [];
+        // A placeholder is not a server id. Keep the offline dialog until sync
+        // replaces it, including after the browser is back online.
+        if (offline?.isOffline?.() || tempIds.length) {
+            this.env.services.dialog.add(OfflineActivityDialog, {
+                resModel,
+                resIds: Array.isArray(ids) ? ids : [],
+                displayName: _t("Activity"),
+                dependsOn: tempIds.length === 1 ? tempIds[0] : tempIds.length ? tempIds : undefined,
+            });
+            return;
+        }
         const context = {
             active_model: resModel,
-            active_ids: resIds,
-            active_id: resIds[0],
+            active_ids: ids,
+            active_id: Array.isArray(ids) ? ids[0] : undefined,
             ...(defaultActivityTypeId !== undefined
                 ? { default_activity_type_id: defaultActivityTypeId }
                 : {}),

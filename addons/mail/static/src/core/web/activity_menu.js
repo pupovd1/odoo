@@ -35,6 +35,10 @@ export class ActivityMenu extends Component {
     }
 
     onBeforeOpen() {
+        // A failed refresh would close the menu and drop groups already loaded.
+        if (this.env.services.offline?.isOffline?.()) {
+            return;
+        }
         this.store.fetchStoreData("systray_get_activities");
     }
 

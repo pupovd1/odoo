@@ -13,7 +13,8 @@ import { cookie } from "@web/core/browser/cookie";
 import { isMobileOS } from "@web/core/browser/feature_detection";
 import { DebugModePlugin } from "@web/core/debug_mode_plugin";
 import { _t } from "@web/core/l10n/translation";
-import { rpc } from "@web/core/network/rpc";
+import { ConnectionLostError, rpc } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { registry } from "@web/core/registry";
 import { user } from "@web/core/user";
 import { Mutex } from "@web/core/utils/concurrency";
@@ -201,11 +202,47 @@ export class Store extends BaseStore {
      * @param {import("models").Message} tmpMessage the associated temporary message
      */
     async doMessagePost(params, tmpMessage) {
+        const offlinePlugin = this.env.services.offline;
+        if (offlinePlugin?.isOffline?.() && tmpMessage) {
+            tmpMessage.isPending = true;
+            tmpMessage.postFailMessage = _t(
+                "Message saved offline. It will sync when you are back online."
+            );
+        }
         return this.messagePostMutex.exec(async () => {
             let res;
             try {
                 res = await rpc("/mail/message/post", params, { silent: true });
             } catch (err) {
+                if (err instanceof ConnectionLostError || offlinePlugin?.isOffline?.()) {
+                    const paramsToQueue = { ...params };
+                    if (isOfflineTempId(paramsToQueue.thread_id)) {
+                        const resolved = offlinePlugin.resolveId(paramsToQueue.thread_id);
+                        if (resolved !== paramsToQueue.thread_id) {
+                            paramsToQueue.thread_id = resolved;
+                        }
+                    }
+                    // A string thread id is the parent web_save queue key. Numeric ids
+                    // already exist on the server and do not need a dependency.
+                    const dependsOn = isOfflineTempId(paramsToQueue.thread_id)
+                        ? paramsToQueue.thread_id
+                        : undefined;
+                    offlinePlugin.scheduleHTTP("/mail/message/post", paramsToQueue, {
+                        extras: {
+                            timeStamp: Date.now(),
+                            displayName: _t("Message"),
+                            actionName: _t("Messages"),
+                            dependsOn,
+                        },
+                    });
+                    if (tmpMessage) {
+                        tmpMessage.isPending = true;
+                        tmpMessage.postFailMessage = _t(
+                            "Message saved offline. It will sync when you are back online."
+                        );
+                    }
+                    return { store_data: {}, message_id: tmpMessage?.id, offline: true };
+                }
                 if (!tmpMessage) {
                     throw err;
                 }
@@ -662,7 +699,11 @@ export class Store extends BaseStore {
             thread,
         });
         postData = {
-            body: await generateEmojisOnHtml(body),
+            // Emoji data is a separate asset. Offline, that load rejects and
+            // then never settles, which would block the optimistic message.
+            body: await generateEmojisOnHtml(body, {
+                allowEmojiLoading: !this.env.services.offline?.isOffline?.(),
+            }),
             email_add_signature: emailAddSignature,
             message_type: "comment",
             partner_cc_emails: [],

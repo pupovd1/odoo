@@ -19,8 +19,9 @@ import { usePopover } from "@web/core/popover/popover_hook";
 import { useService } from "@web/core/utils/hooks";
 import { useTagNavigation } from "@web/core/record_selectors/tag_navigation_hook";
 
-import { Component, proxy, signal, t, useProps } from "@odoo/owl";
+import { Component, proxy, signal, t, usePlugin, useProps } from "@odoo/owl";
 import { getFieldDomain } from "@web/model/relational_model/utils";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 
 export const DEFAULT_TAG_LIMIT = 8;
 
@@ -71,6 +72,7 @@ export class Many2ManyTagsField extends Component {
     setup() {
         this.state = proxy({ expanded: false });
         this.orm = useService("orm");
+        this.offlinePlugin = usePlugin(OfflinePlugin);
         this.previousColorsMap = {};
         this.popover = usePopover(this.constructor.components.Popover, {
             useBottomSheet: this.isBottomSheet,
@@ -126,6 +128,24 @@ export class Many2ManyTagsField extends Component {
 
         if (this.props.canQuickCreate) {
             this.quickCreate = async (name) => {
+                if (this.offlinePlugin.isOffline()) {
+                    const tempId = this.offlinePlugin.nextTempId();
+                    this.offlinePlugin.scheduleORM(
+                        this.relation,
+                        "name_create",
+                        [name],
+                        { context: this.props.context },
+                        {
+                            id: tempId,
+                            extras: {
+                                timeStamp: Date.now(),
+                                tempId,
+                                displayName: name,
+                            },
+                        }
+                    );
+                    return saveRecord([tempId]);
+                }
                 const created = await this.orm.call(this.relation, "name_create", [name], {
                     context: this.props.context,
                 });

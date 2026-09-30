@@ -23,6 +23,23 @@ import { session } from "@web/session";
 
 const IS_READY = Symbol("ready");
 
+/**
+ * IndexedDB can only store structured-cloneable values. Search facets are
+ * reactive records, so keep the plain data applySearch reads back.
+ */
+function cloneForIndexedDB(search) {
+    try {
+        return JSON.parse(JSON.stringify(search));
+    } catch {
+        return {
+            key: search?.key,
+            domain: search?.domain,
+            groupBys: search?.groupBys,
+            facets: [],
+        };
+    }
+}
+
 class FakeIndexedDB {
     // used in non secure context to disable the offline features as data can't be encrypted
     invalidate() {}
@@ -43,7 +60,13 @@ export class OfflinePlugin extends Plugin {
     static VISITED_UI_TABLE_NAME = "visited-ui-items";
     static VISITED_UI_TABLE_NAME_DEBUG = "visited-ui-items-debug";
     static ORM_SYNC_TABLE_NAME = "orm-to-sync";
+    static HTTP_SYNC_TABLE_NAME = "http-to-sync";
+    static BLOB_TABLE_NAME = "offline-blobs";
     static MANY2X_TABLE_PREFIX = "many2x_";
+    /** Temporary id -> real id, kept across reloads so later saves can resolve. */
+    static ID_REMAP_TABLE_NAME = "id-remap";
+    /** Placeholder id prefix for records created offline before sync. */
+    static TEMP_ID_PREFIX = "offline_tmp_";
 
     static SELECTORS_TO_DISABLE = ["button:not([data-available-offline]):not([disabled])"];
 
@@ -68,11 +91,17 @@ export class OfflinePlugin extends Plugin {
     /** whether the connection to the server is currently lost */
     isOffline = signal(false);
 
-    /** whether scheduled ORM calls are currently being synced */
+    /** whether scheduled ORM/HTTP calls are currently being synced */
     syncingORM = signal(false);
 
     /** orm calls that need to be synced once we go back online */
     _ormToSync = signal.Object({});
+
+    /** http calls that need to be synced once we go back online */
+    _httpToSync = signal.Object({});
+
+    /** maps temporary offline ids / queue keys to real server ids after create sync */
+    _idRemap = signal.Object({});
 
     /** items available offline (only populated when offline) */
     _visited = signal.Object({ [IS_READY]: null });
@@ -107,13 +136,19 @@ export class OfflinePlugin extends Plugin {
             this._visited.set({});
         });
 
-        this._updateScheduledORMList().then(async () => {
-            if (!this.isOffline()) {
-                // wait a bit for the webclient to be started before synchronizing
-                await new Promise((r) => browser.setTimeout(r, 3000));
-                this._syncORM();
+        Promise.all([
+            this._updateScheduledORMList(),
+            this._updateScheduledHTTPList(),
+            this._loadIdRemap(),
+        ]).then(
+            async () => {
+                if (!this.isOffline()) {
+                    // wait a bit for the webclient to be started before synchronizing
+                    await new Promise((r) => browser.setTimeout(r, 3000));
+                    this._syncAll();
+                }
             }
-        });
+        );
 
         onWillDestroy(() => this._cleanup());
     }
@@ -170,7 +205,7 @@ export class OfflinePlugin extends Plugin {
             // Retrieve the information about visited items from indexeddb.
             this._visited()[IS_READY] = this._populateVisited();
         } else {
-            this._syncORM();
+            this._syncAll();
             this._cleanup();
         }
     }
@@ -257,6 +292,7 @@ export class OfflinePlugin extends Plugin {
                 value = (await this._idb.read(this._visitedUITable(), key)) || {};
                 let count = value[search.key]?.count || 0;
                 search = value[search.key]?.search || search; // keep original search (no "Custom Filter")
+                search = cloneForIndexedDB(search);
                 delete value[search.key]; // delete and re-add to mark it as "last visited"
                 value[search.key] = { count: ++count, search };
             }
@@ -268,13 +304,34 @@ export class OfflinePlugin extends Plugin {
     // ORM Offline
     // -------------------------------------------------------------------------
 
-    scheduleORM(model, method, args, kwargs, options) {
+    /**
+     * Schedule an ORM call for later sync.
+     *
+     * @param {string} model
+     * @param {string} method
+     * @param {any[]} args
+     * @param {Object} kwargs
+     * @param {Object} [options]
+     * @param {string} [options.id] stable queue key (reuse to coalesce)
+     * @param {string|string[]} [options.dependsOn] queue key(s) that must sync first; ids are remapped after
+     * @param {Object} [options.extras] UI metadata (timeStamp, displayName, error, ...)
+     * @param {Function} [options.rewrite] optional (value, idRemap) => value before replay
+     */
+    scheduleORM(model, method, args, kwargs, options = {}) {
         if (!window.isSecureContext) {
             throw new NonSecureContextError(
                 _t("Offline features not available in a non-secure context")
             );
         }
-        const value = { model, method, args, kwargs, extras: options.extras };
+        // Keep the caller's extras object when there is no dependency. The
+        // queue key is a hash of that object, and a new timeStamp changes it.
+        // An omitted extras must still be an object: JSON.stringify drops
+        // undefined, and sync reads extras.error / extras.timeStamp.
+        let extras = options.extras ?? {};
+        if (options.dependsOn) {
+            extras = { ...extras, dependsOn: options.dependsOn };
+        }
+        const value = { model, method, args, kwargs, extras };
         const key = options.id ?? hashCode(JSON.stringify(value));
         this._ormToSync()[key] = { key, value };
         this._idb.write(OfflinePlugin.ORM_SYNC_TABLE_NAME, key, JSON.stringify(value));
@@ -286,8 +343,155 @@ export class OfflinePlugin extends Plugin {
         this._idb.delete(OfflinePlugin.ORM_SYNC_TABLE_NAME, key);
     }
 
+    /**
+     * Clear a sync error and retry on next sync pass.
+     * @param {string} key
+     */
+    retryScheduledORM(key) {
+        const entry = this._ormToSync()[key];
+        if (!entry) {
+            return;
+        }
+        const extras = { ...entry.value.extras };
+        delete extras.error;
+        this.scheduleORM(entry.value.model, entry.value.method, entry.value.args, entry.value.kwargs, {
+            id: key,
+            extras,
+            dependsOn: extras.dependsOn,
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // HTTP Offline
+    // -------------------------------------------------------------------------
+
+    /**
+     * Schedule an HTTP JSON-RPC call for later sync.
+     *
+     * @param {string} route
+     * @param {Object} params
+     * @param {Object} [options]
+     * @param {string} [options.id]
+     * @param {string|string[]} [options.dependsOn]
+     * @param {string[]} [options.blobKeys] keys in the blob store to upload first
+     * @param {Object} [options.extras]
+     */
+    scheduleHTTP(route, params, options = {}) {
+        if (!window.isSecureContext) {
+            throw new NonSecureContextError(
+                _t("Offline features not available in a non-secure context")
+            );
+        }
+        const extras = { timeStamp: Date.now(), ...options.extras };
+        if (options.dependsOn) {
+            extras.dependsOn = options.dependsOn;
+        }
+        if (options.blobKeys?.length) {
+            extras.blobKeys = options.blobKeys;
+        }
+        const value = { route, params, extras };
+        const key = options.id ?? hashCode(JSON.stringify({ route, params, extras: { timeStamp: extras.timeStamp } }));
+        this._httpToSync()[key] = { key, value };
+        this._idb.write(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key, JSON.stringify(value));
+        return key;
+    }
+
+    removeScheduledHTTP(key) {
+        delete this._httpToSync()[key];
+        this._idb.delete(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key);
+    }
+
+    retryScheduledHTTP(key) {
+        const entry = this._httpToSync()[key];
+        if (!entry) {
+            return;
+        }
+        const extras = { ...entry.value.extras };
+        delete extras.error;
+        this.scheduleHTTP(entry.value.route, entry.value.params, {
+            id: key,
+            extras,
+            dependsOn: extras.dependsOn,
+            blobKeys: extras.blobKeys,
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Blob store (attachments / binary)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Store a binary blob for later upload. Value must be JSON-serializable
+     * (e.g. { name, type, base64 } or ArrayBuffer-compatible structure).
+     *
+     * @param {string} key
+     * @param {Object} blobData
+     */
+    async storeBlob(key, blobData) {
+        if (!window.isSecureContext) {
+            throw new NonSecureContextError(
+                _t("Offline features not available in a non-secure context")
+            );
+        }
+        await this._idb.write(OfflinePlugin.BLOB_TABLE_NAME, key, blobData);
+        return key;
+    }
+
+    async getBlob(key) {
+        return this._idb.read(OfflinePlugin.BLOB_TABLE_NAME, key);
+    }
+
+    async removeBlob(key) {
+        return this._idb.delete(OfflinePlugin.BLOB_TABLE_NAME, key);
+    }
+
+    /**
+     * Allocate a temporary id for offline-created relational records.
+     * @returns {string}
+     */
+    nextTempId() {
+        return `${OfflinePlugin.TEMP_ID_PREFIX}${hashCode(String(Date.now() + Math.random()))}`;
+    }
+
+    /**
+     * Resolve a possibly-temporary id through the remap table.
+     * @param {number|string|false} id
+     */
+    resolveId(id) {
+        if (id === false || id === undefined || id === null) {
+            return id;
+        }
+        return this._idRemap()[id] ?? id;
+    }
+
+    /**
+     * Remember a temporary id (or queue key) -> server id, including across reloads.
+     * @param {string|number} fromId
+     * @param {number|string} realId
+     */
+    _rememberId(fromId, realId) {
+        if (fromId === undefined || fromId === null || fromId === false || realId == null) {
+            return;
+        }
+        if (fromId === realId) {
+            return;
+        }
+        this._idRemap()[fromId] = realId;
+        return this._idb.write(OfflinePlugin.ID_REMAP_TABLE_NAME, String(fromId), realId);
+    }
+
+    async _loadIdRemap() {
+        const table = (await this._idb.getAllEntries(OfflinePlugin.ID_REMAP_TABLE_NAME)) || [];
+        const map = this._idRemap();
+        for (const { key, value } of table) {
+            map[key] = value;
+        }
+    }
+
     get hasScheduledCalls() {
-        return !!Object.keys(this._ormToSync()).length;
+        return (
+            !!Object.keys(this._ormToSync()).length || !!Object.keys(this._httpToSync()).length
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -430,33 +634,151 @@ export class OfflinePlugin extends Plugin {
     }
 
     // -------------------------------------------------------------------------
-    // ORM Offline
+    // ORM / HTTP Sync
     // -------------------------------------------------------------------------
 
-    async _syncORM() {
+    async _syncAll() {
         if (!window.isSecureContext) {
             return;
         }
-
-        // Only one tab can execute this block at a time
-        // This can only be done in a secure context
         await navigator.locks.request("db-sync", async () => {
             this.syncingORM.set(true);
             await this._updateScheduledORMList();
+            await this._updateScheduledHTTPList();
+            await this._loadIdRemap();
+            try {
+                await this._syncORMEntries();
+                await this._syncHTTPEntries();
+            } finally {
+                this.syncingORM.set(false);
+            }
+        });
+    }
 
-            for (const [index, { key, value }] of Object.values(this._ormToSync())
-                .filter(({ value }) => !value.extras.error)
-                .sort((s1, s2) => s1.value.extras.timeStamp - s2.value.extras.timeStamp)
-                .entries()) {
-                if (index !== 0) {
-                    await new Promise((r) => browser.setTimeout(r, 1000)); // Waits 1 second
+    /** @deprecated use _syncAll */
+    async _syncORM() {
+        return this._syncAll();
+    }
+
+    /**
+     * Deep-replace temporary ids in a structure using _idRemap.
+     * @param {any} data
+     */
+    _remapIds(data) {
+        const remap = this._idRemap();
+        const walk = (v) => {
+            if (Array.isArray(v)) {
+                return v.map(walk);
+            }
+            if (v && typeof v === "object") {
+                const out = {};
+                for (const [k, val] of Object.entries(v)) {
+                    out[k] = walk(val);
                 }
+                return out;
+            }
+            if (typeof v === "string" && v in remap) {
+                return remap[v];
+            }
+            return v;
+        };
+        return walk(data);
+    }
+
+    _dependencyKeys(dependsOn) {
+        if (!dependsOn) {
+            return [];
+        }
+        return Array.isArray(dependsOn) ? dependsOn : [dependsOn];
+    }
+
+    _sortedReadyEntries(entries) {
+        const remap = this._idRemap();
+        const ormQueue = this._ormToSync();
+        for (const { value } of Object.values(entries)) {
+            // Rows already in IndexedDB may have lost extras on stringify.
+            if (!value.extras) {
+                value.extras = {};
+            }
+        }
+        return Object.values(entries)
+            .filter(({ value }) => {
+                const extras = value.extras || {};
+                if (extras.error) {
+                    return false;
+                }
+                for (const dep of this._dependencyKeys(extras.dependsOn)) {
+                    // Still queued and not yet turned into a server id.
+                    if (!(dep in remap) && ormQueue[dep]) {
+                        return false;
+                    }
+                }
+                return true;
+            })
+            .sort((s1, s2) => (s1.value.extras.timeStamp || 0) - (s2.value.extras.timeStamp || 0));
+    }
+
+    async _syncORMEntries() {
+        let index = 0;
+        // Loop until no more ready entries (handles dependency chains)
+        for (;;) {
+            const ready = this._sortedReadyEntries(this._ormToSync());
+            if (!ready.length) {
+                break;
+            }
+            let progressed = false;
+            for (const { key, value } of ready) {
+                if (index !== 0) {
+                    await new Promise((r) => browser.setTimeout(r, 1000));
+                }
+                index++;
                 try {
-                    await this.orm.silent.call(value.model, value.method, value.args, value.kwargs);
+                    const args = this._remapIds(value.args);
+                    const kwargs = this._remapIds(value.kwargs || {});
+                    const result = await this.orm.silent.call(
+                        value.model,
+                        value.method,
+                        args,
+                        kwargs
+                    );
+                    // Map create / web_save([]) results to the queue key for dependents
+                    if (
+                        value.method === "web_save" &&
+                        Array.isArray(value.args[0]) &&
+                        value.args[0].length === 0
+                    ) {
+                        const newId = Array.isArray(result)
+                            ? result[0]?.id ?? result[0]
+                            : result?.id ?? result;
+                        if (newId) {
+                            await this._rememberId(key, newId);
+                            if (value.extras.tempId) {
+                                await this._rememberId(value.extras.tempId, newId);
+                            }
+                        }
+                    }
+                    if (value.method === "name_create" && Array.isArray(result)) {
+                        await this._rememberId(key, result[0]);
+                        if (value.extras.tempId) {
+                            await this._rememberId(value.extras.tempId, result[0]);
+                        }
+                    }
+                    if (value.method === "copy" && result) {
+                        const newId = Array.isArray(result) ? result[0] : result;
+                        await this._rememberId(key, newId);
+                    }
                     this.removeScheduledORM(key);
+                    progressed = true;
+                    // Notify listeners that offline sync progressed (views can reload)
+                    rpcBus.trigger("OFFLINE-SYNC", {
+                        model: value.model,
+                        method: value.method,
+                        result,
+                        key,
+                    });
                 } catch (e) {
                     if (e instanceof ConnectionLostError) {
-                        break;
+                        return;
                     }
                     let error = e.message || _t("Error");
                     if (e.data) {
@@ -468,18 +790,128 @@ export class OfflinePlugin extends Plugin {
                     });
                 }
             }
-            this.syncingORM.set(false);
-        });
+            if (!progressed) {
+                break;
+            }
+        }
+    }
+
+    async _syncHTTPEntries() {
+        let index = 0;
+        for (;;) {
+            const ready = this._sortedReadyEntries(this._httpToSync());
+            if (!ready.length) {
+                break;
+            }
+            let progressed = false;
+            for (const { key, value } of ready) {
+                if (index !== 0) {
+                    await new Promise((r) => browser.setTimeout(r, 1000));
+                }
+                index++;
+                try {
+                    // Upload pending blobs first (e.g. attachment uploads handled by caller params)
+                    if (value.extras.blobKeys?.length) {
+                        for (const blobKey of value.extras.blobKeys) {
+                            // Blobs are consumed by route-specific params already serialized;
+                            // cleanup after successful call.
+                            await this.getBlob(blobKey);
+                        }
+                    }
+                    const params = this._remapIds(value.params);
+                    const result = await rpc(value.route, params, { silent: true });
+                    if (value.extras.blobKeys?.length) {
+                        for (const blobKey of value.extras.blobKeys) {
+                            await this.removeBlob(blobKey);
+                        }
+                    }
+                    this.removeScheduledHTTP(key);
+                    progressed = true;
+                    // Same signal as ORM sync. Chatter reloads posted notes from it;
+                    // the form id was already adopted when the parent web_save synced.
+                    rpcBus.trigger("OFFLINE-SYNC", {
+                        route: value.route,
+                        params,
+                        result,
+                        key,
+                    });
+                } catch (e) {
+                    if (e instanceof ConnectionLostError) {
+                        return;
+                    }
+                    let error = e.message || _t("Error");
+                    if (e.data) {
+                        error = e.data.name + " - " + e.data.message;
+                    }
+                    this.scheduleHTTP(value.route, value.params, {
+                        id: key,
+                        extras: { ...value.extras, error },
+                        blobKeys: value.extras.blobKeys,
+                    });
+                }
+            }
+            if (!progressed) {
+                break;
+            }
+        }
+    }
+
+    _parseSyncValue(raw) {
+        const value = JSON.parse(raw);
+        // Rows queued before extras was always stored have no extras key.
+        value.extras ??= {};
+        return value;
     }
 
     async _updateScheduledORMList() {
         const table = await this._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME);
         this._ormToSync.set(
             Object.fromEntries(
-                table.map((v) => [v.key, { key: v.key, value: JSON.parse(v.value) }])
+                table.map((v) => [v.key, { key: v.key, value: this._parseSyncValue(v.value) }])
             )
         );
     }
+
+    async _updateScheduledHTTPList() {
+        const table = await this._idb.getAllEntries(OfflinePlugin.HTTP_SYNC_TABLE_NAME);
+        this._httpToSync.set(
+            Object.fromEntries(
+                table.map((v) => [v.key, { key: v.key, value: this._parseSyncValue(v.value) }])
+            )
+        );
+    }
+}
+
+/** @param {unknown} id */
+export function isOfflineTempId(id) {
+    return typeof id === "string" && id.startsWith(OfflinePlugin.TEMP_ID_PREFIX);
+}
+
+/**
+ * Collect temporary ids embedded in an offline write payload.
+ * @param {unknown} value
+ * @param {Set<string>} [acc]
+ * @returns {Set<string>}
+ */
+export function collectOfflineTempIds(value, acc = new Set()) {
+    if (typeof value === "string") {
+        if (isOfflineTempId(value)) {
+            acc.add(value);
+        }
+        return acc;
+    }
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            collectOfflineTempIds(item, acc);
+        }
+        return acc;
+    }
+    if (value && typeof value === "object") {
+        for (const item of Object.values(value)) {
+            collectOfflineTempIds(item, acc);
+        }
+    }
+    return acc;
 }
 
 services.add(OfflinePlugin);

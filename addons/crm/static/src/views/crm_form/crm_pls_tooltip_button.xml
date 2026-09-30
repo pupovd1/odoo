@@ -4,6 +4,7 @@
         <button t-attf-class="o_crm_pls_tooltip_button btn btn-link btn-link-inline"
             title="See AI-computed chances details"
             aria-label="See AI-computed chances details"
+            data-available-offline=""
             t-on-click.prevent.stop="this.onClickPlsTooltipButton">
             <img class="m-1" role="img" src="/crm/static/src/img/pls-tooltip-ai-icon.png" alt="AI"/>
         </button>

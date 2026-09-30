@@ -1,4 +1,4 @@
-import { Component, proxy } from "@odoo/owl";
+import { Component, proxy, t, usePlugin, useProps } from "@odoo/owl";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
@@ -6,6 +6,7 @@ import { useService } from "@web/core/utils/hooks";
 import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
 import { sprintf } from "@web/core/utils/strings";
 import { _t } from "@web/core/l10n/translation";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { user } from "@web/core/user";
 import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 import { ErrorDialog } from "@web/core/errors/error_dialogs";
@@ -21,11 +22,15 @@ export const MODULE_STATUS = {
 export class LeadGenerationDropdown extends Component {
     static template = "crm.lead_generation_dropdown";
     static components = { Dropdown, DropdownItem };
+    props = useProps({
+        onCreate: t.function().optional(),
+    });
 
     setup() {
         this.orm = useService("orm");
         this.dialogs = useService("dialog");
         this.action = useService("action");
+        this.offlinePlugin = usePlugin(OfflinePlugin);
         this.newContentText = {
             FAILED_TO_INSTALL: _t('Failed to install "%(module_name)s"'),
             INSTALLING: _t('Installing "%(module_name)s"'),
@@ -102,6 +107,27 @@ export class LeadGenerationDropdown extends Component {
         useHotkey("escape", () => this.dropdown.close(), {
             isAvailable: () => this.dropdown.isOpen,
         });
+    }
+
+    get isNewButtonAvailableOffline() {
+        const { actionId, viewType } = this.env.config;
+        if (viewType === "list") {
+            return this.offlinePlugin.isAvailableOffline(actionId, "form", false);
+        }
+        if (viewType === "kanban") {
+            return (
+                this.offlinePlugin.isAvailableOffline(actionId, "kanban_quick_create", false) ||
+                this.offlinePlugin.isAvailableOffline(actionId, "form", false)
+            );
+        }
+        return this.offlinePlugin.isAvailableOffline(actionId, "form", false);
+    }
+
+    onCreate() {
+        if (this.props.onCreate) {
+            return this.props.onCreate();
+        }
+        this.action.switchView("form", { resId: false });
     }
 
     swapDescription(element) {

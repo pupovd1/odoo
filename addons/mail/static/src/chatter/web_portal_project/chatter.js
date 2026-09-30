@@ -6,6 +6,7 @@ import { propComputed, useMessageScrolling } from "@mail/utils/common/hooks";
 import { Component, onMounted, proxy, signal, t, useOnChange } from "@odoo/owl";
 
 import { _t } from "@web/core/l10n/translation";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { router } from "@web/core/browser/router";
 import { useBus, useService } from "@web/core/utils/hooks";
 import { useThrottleForAnimation } from "@web/core/utils/timing";
@@ -19,7 +20,7 @@ export class Chatter extends Component {
         this.composer = propComputed("composer", t.boolean().optional(true));
         this.threadId = propComputed(
             "threadId",
-            t.or([t.number(), t.literal(false)]).optional(false)
+            t.or([t.number(), t.string(), t.literal(false)]).optional(false)
         );
         this.threadModel = propComputed("threadModel", t.string());
         this.twoColumns = propComputed("twoColumns", t.boolean().optional(false));
@@ -146,6 +147,12 @@ export class Chatter extends Component {
      */
     async load(thread, requestList) {
         if (!thread?.id || !this.state.thread?.eq(thread)) {
+            return;
+        }
+        if (isOfflineTempId(thread.id)) {
+            // The parent record is queued and has no server thread yet.
+            thread.isLoaded = true;
+            thread.status = "ready";
             return;
         }
         await thread.fetchThreadData(requestList, {

@@ -78,6 +78,28 @@ export class ForecastSearchModel extends CrmSearchModel {
 
     /**
      * @override
+     * Persist forecastStart in offline search keys.
+     */
+    getCurrentSearch() {
+        const search = super.getCurrentSearch();
+        if (this.forecastStart) {
+            return { ...search, forecastStart: this.forecastStart };
+        }
+        return search;
+    }
+
+    /**
+     * @override
+     */
+    applySearch(search) {
+        if (search.forecastStart) {
+            this.forecastStart = search.forecastStart;
+        }
+        return super.applySearch(search);
+    }
+
+    /**
+     * @override
      */
     _reset() {
         super._reset();

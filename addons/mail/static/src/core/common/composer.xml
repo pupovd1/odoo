@@ -143,6 +143,7 @@
         t-on-click="this.sendMessage"
         t-att-disabled="this.isSendButtonDisabled"
         t-att-aria-label="this.SEND_TEXT"
+        data-available-offline=""
     >
         <t t-if="this.thread and !this.thread.channel" t-out="this.SEND_TEXT"/>
         <t t-else=""><i class="oi oi-fw oi-lg" data-icon="send"/></t>

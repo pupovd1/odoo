@@ -16,6 +16,38 @@ const STATUS = {
     ARCHIVED: { label: _t("Archived"), color: 2 },
     UNARCHIVED: { label: _t("Unarchived"), color: 4 },
     DELETED: { label: _t("Deleted"), color: 1 },
+    WON: { label: _t("Won"), color: 10 },
+    LOST: { label: _t("Lost"), color: 1 },
+    RESTORED: { label: _t("Restored"), color: 4 },
+    CONVERTED: { label: _t("Converted"), color: 3 },
+    DUPLICATED: { label: _t("Duplicated"), color: 5 },
+    MESSAGE: { label: _t("Message"), color: 8 },
+    ACTIVITY: { label: _t("Activity"), color: 6 },
+    ATTACHMENT: { label: _t("Attachment"), color: 7 },
+    NAME_CREATE: { label: _t("Created related"), color: 9 },
+    PENDING: { label: _t("Pending"), color: 3 },
+};
+
+function queueExtras(value) {
+    return value.extras || {};
+}
+
+const METHOD_STATUS = {
+    web_save: null, // handled specially
+    unlink: STATUS.DELETED,
+    web_unlink: STATUS.DELETED,
+    action_archive: STATUS.ARCHIVED,
+    action_unarchive: STATUS.UNARCHIVED,
+    action_set_won: STATUS.WON,
+    action_set_won_rainbowman: STATUS.WON,
+    action_set_lost: STATUS.LOST,
+    action_restore: STATUS.RESTORED,
+    action_convert_to_opportunity: STATUS.CONVERTED,
+    copy: STATUS.DUPLICATED,
+    message_post: STATUS.MESSAGE,
+    activity_schedule: STATUS.ACTIVITY,
+    action_feedback: STATUS.ACTIVITY,
+    name_create: STATUS.NAME_CREATE,
 };
 
 class OfflineSystray extends Component {
@@ -26,71 +58,113 @@ class OfflineSystray extends Component {
         this.offlinePlugin = usePlugin(OfflinePlugin);
         this.actionService = useService("action");
         this.dialogService = useService("dialog");
+        this.notification = useService("notification");
         this.uiService = useService("ui");
     }
 
     groupEntries = computed(() => {
         const items = [];
         for (const { key, value } of Object.values(this.offlinePlugin._ormToSync())) {
-            const timeStamp = formatDateTime(DateTime.fromMillis(value.extras.timeStamp));
-            const item = {
-                id: key,
-                timeStamp: value.extras.timeStamp,
-                actionName: value.extras.actionName,
-                displayName: value.extras.displayName,
-                clickable: this.isClickable(value),
-                error: value.extras.error,
-                tooltip: {
-                    timeStamp,
-                    records: value.extras.displayNames || [],
-                },
-            };
-            if (value.method === "web_save") {
-                item.status = value.args[0].length ? STATUS.EDITED : STATUS.CREATED;
-                item.tooltip.changes = Object.entries(value.extras.changes).map(([k, v]) => [
-                    k,
-                    v?.display_name ?? v,
-                ]);
-                if (value.args[0].length) {
-                    item.tooltip.changes = item.tooltip.changes.map((c) => [
-                        c[0],
-                        value.extras.originalValues[c[0]]?.display_name ??
-                            JSON.stringify(value.extras.originalValues[c[0]]),
-                        c[1],
-                    ]);
-                }
-            }
-            if (value.method === "unlink" || value.method === "web_unlink") {
-                item.status = STATUS.DELETED;
-            }
-            if (value.method === "action_archive") {
-                item.status = STATUS.ARCHIVED;
-            }
-            if (value.method === "action_unarchive") {
-                item.status = STATUS.UNARCHIVED;
-            }
-            item.tooltip = JSON.stringify(item.tooltip);
-            items.push(item);
+            items.push(this._buildOrmItem(key, value));
+        }
+        for (const { key, value } of Object.values(this.offlinePlugin._httpToSync())) {
+            items.push(this._buildHttpItem(key, value));
         }
         const sections = Object.entries(Object.groupBy(items, (item) => item.actionName || ""));
-        sections.forEach(([_name, items]) => {
-            items.sort((itemA, itemB) => itemA.timeStamp - itemB.timeStamp);
+        sections.forEach(([_name, sectionItems]) => {
+            sectionItems.sort(
+                (itemA, itemB) => (itemA.timeStamp || 0) - (itemB.timeStamp || 0)
+            );
         });
         return sections;
     });
 
+    _buildOrmItem(key, value) {
+        const extras = queueExtras(value);
+        const timeStamp = extras.timeStamp
+            ? formatDateTime(DateTime.fromMillis(extras.timeStamp))
+            : "";
+        const item = {
+            id: key,
+            kind: "orm",
+            timeStamp: extras.timeStamp,
+            actionName: extras.actionName,
+            displayName: extras.displayName || value.model,
+            clickable: this.isClickable(value),
+            error: extras.error,
+            canRetry: !!extras.error,
+            tooltip: {
+                timeStamp,
+                records: extras.displayNames || [],
+            },
+            status: METHOD_STATUS[value.method] || STATUS.PENDING,
+        };
+        if (value.method === "web_save") {
+            item.status = value.args[0].length ? STATUS.EDITED : STATUS.CREATED;
+            item.tooltip.changes = Object.entries(extras.changes || {}).map(([k, v]) => [
+                k,
+                v?.display_name ?? v,
+            ]);
+            if (value.args[0].length && extras.originalValues) {
+                item.tooltip.changes = item.tooltip.changes.map((c) => [
+                    c[0],
+                    extras.originalValues[c[0]]?.display_name ??
+                        JSON.stringify(extras.originalValues[c[0]]),
+                    c[1],
+                ]);
+            }
+        }
+        item.tooltip = JSON.stringify(item.tooltip);
+        return item;
+    }
+
+    _buildHttpItem(key, value) {
+        const extras = queueExtras(value);
+        const timeStamp = extras.timeStamp
+            ? formatDateTime(DateTime.fromMillis(extras.timeStamp))
+            : "";
+        let status = STATUS.PENDING;
+        if (value.route.includes("message/post")) {
+            status = STATUS.MESSAGE;
+        } else if (value.route.includes("attachment")) {
+            status = STATUS.ATTACHMENT;
+        }
+        return {
+            id: key,
+            kind: "http",
+            timeStamp: extras.timeStamp,
+            actionName: extras.actionName || _t("Messages"),
+            displayName: extras.displayName || value.route,
+            clickable: false,
+            error: extras.error,
+            canRetry: !!extras.error,
+            status,
+            tooltip: JSON.stringify({
+                timeStamp,
+                records: extras.displayNames || [],
+            }),
+        };
+    }
+
     isClickable(value) {
-        const resId = value.args[0].length ? value.args[0][0] : false;
+        const extras = queueExtras(value);
+        const resId = value.args[0]?.length ? value.args[0][0] : false;
         return (
             value.method === "web_save" &&
-            value.extras.viewType === "form" &&
+            extras.viewType === "form" &&
             (!this.offlinePlugin.isOffline() ||
-                this.offlinePlugin.isAvailableOffline(value.extras.actionId, "form", resId))
+                this.offlinePlugin.isAvailableOffline(extras.actionId, "form", resId))
         );
     }
 
-    inError = computed(() =>
-        Object.values(this.offlinePlugin._ormToSync()).find(({ value }) => value.extras.error)
+    inError = computed(
+        () =>
+            Object.values(this.offlinePlugin._ormToSync()).find(
+                ({ value }) => queueExtras(value).error
+            ) ||
+            Object.values(this.offlinePlugin._httpToSync()).find(
+                ({ value }) => queueExtras(value).error
+            )
     );
 
     get labelColor() {
@@ -141,21 +215,40 @@ class OfflineSystray extends Component {
         return _t("Syncing");
     }
 
-    discard(id) {
+    discard(id, kind = "orm") {
         this.dialogService.add(ConfirmationDialog, {
             title: _t("Discard offline change"),
             body: _t("Are you sure that you want to discard the changes you made offline?"),
             confirmLabel: _t("Discard"),
             cancelLabel: _t("No, keep it"),
-            confirm: () => this.offlinePlugin.removeScheduledORM(id),
+            confirm: () => {
+                if (kind === "http") {
+                    this.offlinePlugin.removeScheduledHTTP(id);
+                } else {
+                    this.offlinePlugin.removeScheduledORM(id);
+                }
+            },
             cancel: () => {},
         });
     }
 
+    retry(id, kind = "orm") {
+        if (kind === "http") {
+            this.offlinePlugin.retryScheduledHTTP(id);
+        } else {
+            this.offlinePlugin.retryScheduledORM(id);
+        }
+        if (!this.offlinePlugin.isOffline()) {
+            this.offlinePlugin._syncAll();
+        }
+        this.notification.add(_t("Queued for retry"), { type: "info" });
+    }
+
     async openView(id) {
         const { value } = this.offlinePlugin._ormToSync()[id];
+        const extras = queueExtras(value);
         const resId = value.args[0]?.[0];
-        await this.actionService.doAction(value.extras.actionId, {
+        await this.actionService.doAction(extras.actionId, {
             viewType: "form",
             props: { offlineId: id, resId },
             clearBreadcrumbs: true,

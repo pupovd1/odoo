@@ -1,0 +1,55 @@
+import { Component, signal, t, usePlugin, useProps } from "@odoo/owl";
+import { Dialog } from "@web/core/dialog/dialog";
+import { _t } from "@web/core/l10n/translation";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { useService } from "@web/core/utils/hooks";
+
+/**
+ * Lightweight activity scheduler for offline mode.
+ * Queues activity_schedule on the parent record for later sync.
+ */
+export class OfflineActivityDialog extends Component {
+    static template = "mail.OfflineActivityDialog";
+    static components = { Dialog };
+
+    props = useProps({
+        close: t.function(),
+        resModel: t.string(),
+        resIds: t.array(t.or([t.number(), t.string()])),
+        displayName: t.string().optional(),
+        dependsOn: t.or([t.string(), t.array(t.string())]).optional(),
+    });
+
+    setup() {
+        this.offlinePlugin = usePlugin(OfflinePlugin);
+        this.notification = useService("notification");
+        // t-model requires a signal. A plain object has no `set`.
+        this.summary = signal("");
+        this.note = signal("");
+        this.dateDeadline = signal(new Date().toISOString().slice(0, 10));
+    }
+
+    onConfirm() {
+        const extras = {
+            timeStamp: Date.now(),
+            displayName: this.props.displayName || _t("Activity"),
+            actionName: _t("Activities"),
+        };
+        if (this.props.dependsOn) {
+            extras.dependsOn = this.props.dependsOn;
+        }
+        this.offlinePlugin.scheduleORM(
+            this.props.resModel,
+            "activity_schedule",
+            [this.props.resIds],
+            {
+                summary: this.summary() || _t("Offline activity"),
+                note: this.note() || false,
+                date_deadline: this.dateDeadline(),
+            },
+            { extras }
+        );
+        this.notification.add(_t("Activity queued for sync"), { type: "info" });
+        this.props.close();
+    }
+}

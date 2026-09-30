@@ -1,23 +1,13 @@
 import { checkRainbowmanMessage } from "@crm/views/check_rainbowman_message";
+import "@crm/views/crm_offline_actions";
 import { registry } from "@web/core/registry";
 import { formView } from "@web/views/form/form_view";
+import { ConnectionLostError } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
+import { _t } from "@web/core/l10n/translation";
 
 class CrmFormRecord extends formView.Model.Record {
-     /**
-     * override of record _save mechanism intended to affect the main form record
-     * We check if the stage_id field was altered and if we need to display a rainbowman
-     * message.
-     *
-     * This method will also simulate a real "force_save" on the email and phone
-     * when needed. The "force_save" attribute only works on readonly field. For our
-     * use case, we need to write the email and the phone even if the user didn't
-     * change them, to synchronize those values with the partner (so the email / phone
-     * inverse method can be called).
-     *
-     * We base this synchronization on the value of "partner_phone_update"
-     * and "partner_email_update", which are computed fields that hold a value
-     * whenever we need to synch.
-     *
+    /**
      * @override
      */
     async _save() {
@@ -27,15 +17,19 @@ class CrmFormRecord extends formView.Model.Record {
         let changeStage = false;
         const needsSynchronizationEmail =
             this._changes.partner_email_update === undefined
-                ? this._values.partner_email_update // original value
-                : this._changes.partner_email_update; // new value
+                ? this._values.partner_email_update
+                : this._changes.partner_email_update;
 
         const needsSynchronizationPhone =
             this._changes.partner_phone_update === undefined
-                ? this._values.partner_phone_update // original value
-                : this._changes.partner_phone_update; // new value
+                ? this._values.partner_phone_update
+                : this._changes.partner_phone_update;
 
-        if (needsSynchronizationEmail && this._changes.email_from === undefined && this._values.email_from) {
+        if (
+            needsSynchronizationEmail &&
+            this._changes.email_from === undefined &&
+            this._values.email_from
+        ) {
             this._changes.email_from = this._values.email_from;
         }
         if (needsSynchronizationPhone && this._changes.phone === undefined && this._values.phone) {
@@ -64,7 +58,56 @@ class CrmFormModel extends formView.Model {
     }
 }
 
+class CrmFormController extends formView.Controller {
+    getStaticActionMenuItems() {
+        const items = super.getStaticActionMenuItems();
+        if (items.duplicate) {
+            items.duplicate.availableOffline = true;
+            const originalCallback = items.duplicate.callback;
+            items.duplicate.callback = async () => {
+                const record = this.model.root;
+                const queueCopy = () => {
+                    const id = record.resId;
+                    this.env.services.offline.scheduleORM(
+                        record.resModel,
+                        "copy",
+                        [[id]],
+                        { context: record.context },
+                        {
+                            dependsOn: isOfflineTempId(id) ? id : undefined,
+                            extras: {
+                                timeStamp: Date.now(),
+                                displayName: record.data.display_name || _t("Lead"),
+                                actionName: _t("CRM"),
+                            },
+                        }
+                    );
+                    this.env.services.notification.add(
+                        _t("Duplicate queued for sync when back online"),
+                        { type: "info" }
+                    );
+                };
+                if (isOfflineTempId(record.resId)) {
+                    queueCopy();
+                    return;
+                }
+                try {
+                    await originalCallback();
+                } catch (e) {
+                    if (e instanceof ConnectionLostError) {
+                        queueCopy();
+                        return;
+                    }
+                    throw e;
+                }
+            };
+        }
+        return items;
+    }
+}
+
 registry.category("views").add("crm_form", {
     ...formView,
+    Controller: CrmFormController,
     Model: CrmFormModel,
 });

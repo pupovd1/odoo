@@ -393,11 +393,11 @@ test("scheduleORM", async () => {
                 model: "partner",
             },
         },
-        "7b1d3bb0": {
-            key: "7b1d3bb0",
+        f5b90cfd: {
+            key: "f5b90cfd",
             value: {
                 args: [22, 13],
-                extras: undefined,
+                extras: {},
                 kwargs: {
                     arg1: true,
                     arg2: false,
@@ -408,7 +408,14 @@ test("scheduleORM", async () => {
         },
     });
 
-    offline.removeScheduledORM("7b1d3bb0");
+    const stored = JSON.parse(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
+            (row) => row.key === "f5b90cfd"
+        ).value
+    );
+    expect(stored.extras).toEqual({});
+
+    offline.removeScheduledORM("f5b90cfd");
     expect(offline._ormToSync()).toEqual({
         22: {
             key: 22,
@@ -440,6 +447,50 @@ test("scheduleORM", async () => {
             model: "partner",
         },
     ]);
+});
+
+test("queued ORM entry stored without extras still syncs", async () => {
+    const setOffline = mockOffline();
+    onRpc("partner", "create", ({ args }) => {
+        expect.step(`create:${args[0]}`);
+        return args[0];
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await setOffline(true);
+
+    // What IndexedDB keeps after JSON.stringify({ extras: undefined }).
+    await offline._idb.write(
+        OfflinePlugin.ORM_SYNC_TABLE_NAME,
+        "legacy",
+        JSON.stringify({
+            model: "partner",
+            method: "create",
+            args: [22],
+            kwargs: {},
+            extras: undefined,
+        })
+    );
+    offline.scheduleORM("partner", "create", [23], {}, {
+        id: "newer",
+        extras: { timeStamp: 10 },
+    });
+
+    const legacy = JSON.parse(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
+            (row) => row.key === "legacy"
+        ).value
+    );
+    expect(legacy.extras).toBe(undefined);
+    offline._ormToSync()["legacy"] = { key: "legacy", value: legacy };
+    expect(() => offline._sortedReadyEntries(offline._ormToSync())).not.toThrow();
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(1500);
+    await runAllTimers();
+    await expect.waitForSteps(["create:22", "create:23"]);
 });
 
 test("syncORM ConnectionLost", async () => {
@@ -531,4 +582,143 @@ test("syncORM ConnectionLost", async () => {
             },
         },
     });
+});
+
+test("scheduleHTTP and sync HTTP queue", async () => {
+    const setOffline = mockOffline();
+    onRpc("/mail/message/post", () => {
+        expect.step("message_post");
+        return { store_data: {}, message_id: 1 };
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+
+    await setOffline(true);
+    offline.scheduleHTTP(
+        "/mail/message/post",
+        { thread_id: 1, thread_model: "crm.lead", post_data: { body: "hi" } },
+        { extras: { timeStamp: 1, displayName: "Note" } }
+    );
+    expect(offline.hasScheduledCalls).toBe(true);
+    expect(Object.keys(offline._httpToSync()).length).toBe(1);
+
+    await setOffline(false);
+    await runAllTimers();
+    await expect.waitForSteps(["message_post"]);
+    expect(offline.hasScheduledCalls).toBe(false);
+});
+
+test("scheduleORM dependsOn waits for parent create", async () => {
+    const setOffline = mockOffline();
+    let createId = 100;
+    onRpc("partner", "web_save", ({ args }) => {
+        expect.step(`web_save:${JSON.stringify(args[0])}`);
+        if (!args[0].length) {
+            return [{ id: ++createId }];
+        }
+        return [{ id: args[0][0] }];
+    });
+    onRpc("partner", "message_post", ({ args }) => {
+        expect.step(`message_post:${args[0][0]}`);
+        return true;
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+
+    await setOffline(true);
+    const parentKey = offline.scheduleORM(
+        "partner",
+        "web_save",
+        [[], { name: "New" }],
+        {},
+        { extras: { timeStamp: 1 } }
+    );
+    offline.scheduleORM(
+        "partner",
+        "message_post",
+        [[parentKey], { body: "note" }],
+        {},
+        { extras: { timeStamp: 2, dependsOn: parentKey } }
+    );
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(1500);
+    await runAllTimers();
+    await expect.waitForSteps(["web_save:[]", "message_post:101"]);
+});
+
+test("older web_save waits for name_create and remaps the temp id", async () => {
+    const setOffline = mockOffline();
+    const tempId = "offline_tmp_partner";
+    onRpc("res.partner", "name_create", () => {
+        expect.step("name_create");
+        return [5, "Acme"];
+    });
+    onRpc("crm.lead", "web_save", ({ args }) => {
+        expect.step(`web_save:${args[1].partner_id}`);
+        return [{ id: 9 }];
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await setOffline(true);
+
+    offline.scheduleORM("res.partner", "name_create", ["Acme"], {}, {
+        id: tempId,
+        extras: { timeStamp: 50, tempId },
+    });
+    offline.scheduleORM(
+        "crm.lead",
+        "web_save",
+        [[], { partner_id: tempId }],
+        {},
+        { extras: { timeStamp: 1, dependsOn: tempId } }
+    );
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(1500);
+    await runAllTimers();
+    await expect.waitForSteps(["name_create", "web_save:5"]);
+});
+
+test("id remap is reloaded from IndexedDB after the in-memory map is cleared", async () => {
+    const setOffline = mockOffline();
+    const tempId = "offline_tmp_reload";
+    onRpc("res.partner", "name_create", () => [15, "Acme"]);
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await setOffline(true);
+    offline.scheduleORM("res.partner", "name_create", ["Acme"], {}, {
+        id: tempId,
+        extras: { timeStamp: 1, tempId },
+    });
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(500);
+    await runAllTimers();
+
+    expect(offline.resolveId(tempId)).toBe(15);
+    const map = offline._idRemap();
+    for (const key of Object.keys(map)) {
+        delete map[key];
+    }
+    expect(offline.resolveId(tempId)).toBe(tempId);
+    await offline._loadIdRemap();
+    expect(offline.resolveId(tempId)).toBe(15);
+});
+
+test("storeBlob and removeBlob", async () => {
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    const key = "blob-test-1";
+    await offline.storeBlob(key, { name: "a.txt", base64: "YQ==" });
+    const data = await offline.getBlob(key);
+    expect(data.name).toBe("a.txt");
+    await offline.removeBlob(key);
+    expect(await offline.getBlob(key)).toBe(undefined);
 });

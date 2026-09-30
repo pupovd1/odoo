@@ -1,7 +1,17 @@
 <?xml version="1.0" encoding="UTF-8" ?>
 <templates xml:space="preserve">
     <t t-name="crm.lead_generation_dropdown">
-        <Dropdown manual="true" state="this.dropdown" menuClass="'o_lead_mining_menu_choices d-grid grid column-gap-2 row-gap-0 px-2'">
+        <!-- Offline: show New instead of Generate (network-bound modules) -->
+        <button t-if="this.offlinePlugin.isOffline()"
+                type="button"
+                class="btn btn-primary"
+                accesskey="c"
+                t-att-data-available-offline="this.isNewButtonAvailableOffline"
+                t-on-click="this.onCreate"
+                data-bounce-button="">
+            New
+        </button>
+        <Dropdown t-else="" manual="true" state="this.dropdown" menuClass="'o_lead_mining_menu_choices d-grid grid column-gap-2 row-gap-0 px-2'">
             <button t-on-click="this.toggleDropdown" accesskey="c" class="o-dropdown-caret btn-secondary btn">Generate</button>
             <t t-set-slot="content">
                 <t t-set="colClass" t-value="'g-col-' + (this.sortedDropdownContentElements.length > 3 ? 6 : 12)"/>

@@ -21,9 +21,10 @@ import { Dropdown } from "@web/core/dropdown/dropdown";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { useCustomDropzone } from "@web/core/dropzone/dropzone_hook";
 import { _t } from "@web/core/l10n/translation";
-import { rpc } from "@web/core/network/rpc";
+import { rpc, rpcBus } from "@web/core/network/rpc";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { KeepLast } from "@web/core/utils/concurrency";
-import { useService } from "@web/core/utils/hooks";
+import { useBus, useService } from "@web/core/utils/hooks";
 import { patch } from "@web/core/utils/patch";
 import { Record } from "@web/model/relational_model/record";
 import { FileUploader } from "@web/views/fields/file_handler";
@@ -103,6 +104,8 @@ const chatterPatch = {
             showScheduledMessages: true,
         });
         this.dialog = useService("dialog");
+        this._syncedMessagePosts = [];
+        useBus(rpcBus, "OFFLINE-SYNC", (ev) => this._onOfflineMessageSynced(ev.detail));
         this.messageSearch = useMessageSearch();
         this.attachmentUploader = useAttachmentUploader(this.thread);
         this.followerListDropdown = useDropdownState();
@@ -327,16 +330,170 @@ const chatterPatch = {
     },
 
     changeThread(threadModel, threadId) {
+        this._carryOfflineMessages(this.state.thread, threadModel, threadId);
         super.changeThread(...arguments);
         this.discardAttachmentSelection();
         if (threadId === false) {
             this.state.composerType = false;
-        } else {
-            this.onThreadCreated?.(this.state.thread);
+            // Leaving the unsaved record. Do not open the composer or activity
+            // dialog on whatever record is shown next.
             this.onThreadCreated = null;
+            this._pendingThreadRecord = undefined;
+        } else {
+            if (this._shouldOpenPendingThread(threadId)) {
+                this.onThreadCreated(this.state.thread);
+            }
+            this.onThreadCreated = null;
+            this._pendingThreadRecord = undefined;
             this.messageSearch.thread = this.state.thread;
             this.closeSearch();
+            this._reloadSyncedMessages();
         }
+    },
+
+    /**
+     * Pending notes live on the placeholder thread. Moving them keeps them
+     * visible when the form switches to the server id.
+     */
+    _carryOfflineMessages(previous, threadModel, threadId) {
+        if (
+            !previous ||
+            !isOfflineTempId(previous.id) ||
+            !threadId ||
+            threadId === previous.id ||
+            previous.model !== threadModel
+        ) {
+            return;
+        }
+        const next = this.store["mail.thread"].insert({ model: threadModel, id: threadId });
+        const pending = [...previous.messages].filter(
+            (message) => message.isPending && !message.is_transient
+        );
+        for (const message of pending) {
+            const index = previous.messages.findIndex((item) => item.eq(message));
+            if (index !== -1) {
+                previous.messages.splice(index, 1);
+            }
+            message.res_id = threadId;
+            message.thread = next;
+            if (next.messages.findIndex((item) => item.eq(message)) === -1) {
+                next.messages.push(message);
+            }
+        }
+    },
+
+    _onOfflineMessageSynced(detail) {
+        if (detail?.route !== "/mail/message/post") {
+            return;
+        }
+        const params = detail.params || {};
+        if (!params.thread_model || !params.thread_id) {
+            return;
+        }
+        const temporaryId = params.context?.temporary_id;
+        const alreadyQueued = this._syncedMessagePosts.some(
+            (entry) =>
+                entry.thread_model === params.thread_model &&
+                entry.thread_id === params.thread_id &&
+                entry.temporary_id === temporaryId
+        );
+        if (!alreadyQueued) {
+            this._syncedMessagePosts.push({
+                thread_model: params.thread_model,
+                thread_id: params.thread_id,
+                temporary_id: temporaryId,
+                result: detail.result,
+            });
+        }
+        this._reloadSyncedMessages();
+    },
+
+    /**
+     * Apply queued posts for the current thread. Entries stay until the
+     * optimistic note has been replaced, so a later visit can retry.
+     */
+    _reloadSyncedMessages() {
+        const thread = this.state.thread;
+        if (!thread || isOfflineTempId(thread.id) || !this._syncedMessagePosts.length) {
+            return;
+        }
+        const applied = [];
+        for (const entry of this._syncedMessagePosts) {
+            if (entry.thread_model !== thread.model || entry.thread_id !== thread.id) {
+                continue;
+            }
+            if (this._replaceSyncedMessage(thread, entry)) {
+                applied.push(entry);
+            }
+        }
+        if (applied.length) {
+            this._syncedMessagePosts = this._syncedMessagePosts.filter(
+                (entry) => !applied.includes(entry)
+            );
+        }
+    },
+
+    /**
+     * Swap the pending note for the message the post RPC already returned.
+     * Does not refetch: fetchNewMessages clears an isLoaded thread that has
+     * no persistent messages yet, which drops the optimistic note if that
+     * request fails.
+     * @returns {boolean} true when the real message is on the thread and the
+     * pending copy is gone
+     */
+    _replaceSyncedMessage(thread, entry) {
+        const messageId = entry.result?.message_id;
+        if (!messageId) {
+            return false;
+        }
+        if (entry.result.store_data) {
+            this.store.insert(entry.result.store_data);
+        }
+        const message = this.store["mail.message"].get(messageId);
+        if (!message) {
+            return false;
+        }
+        const tmp =
+            entry.temporary_id !== undefined
+                ? this.store["mail.message"].get(entry.temporary_id)
+                : undefined;
+        if (thread.messages.findIndex((item) => item.eq(message)) === -1) {
+            thread.addOrReplaceMessage(message, tmp);
+        }
+        if (thread.messages.findIndex((item) => item.eq(message)) === -1) {
+            return false;
+        }
+        if (tmp && !tmp.eq(message)) {
+            const index = thread.messages.findIndex((item) => item.eq(tmp));
+            if (index !== -1) {
+                thread.messages.splice(index, 1);
+            }
+            if (tmp.exists()) {
+                tmp.delete();
+            }
+        }
+        const tmpStillShown =
+            tmp &&
+            tmp.exists() &&
+            !tmp.eq(message) &&
+            thread.messages.findIndex((item) => item.eq(tmp)) !== -1;
+        return (
+            !tmpStillShown && thread.messages.findIndex((item) => item.eq(message)) !== -1
+        );
+    },
+
+    /**
+     * A failed save keeps the callback for this record only. A later thread
+     * whose id is not this record's id belongs to another lead.
+     */
+    _shouldOpenPendingThread(threadId) {
+        if (!this.onThreadCreated) {
+            return false;
+        }
+        if (!this._pendingThreadRecord) {
+            return true;
+        }
+        return this._pendingThreadRecord.resId === threadId;
     },
 
     closeSearch() {
@@ -448,10 +605,17 @@ const chatterPatch = {
     },
 
     onPostCallback() {
-        if (this.hasParentReloadOnMessagePosted) {
+        const offline = this.store.env.services.offline?.isOffline?.();
+        if (this.hasParentReloadOnMessagePosted && !offline) {
             this.reloadParentView();
         }
         this.toggleComposer();
+        if (offline) {
+            // A reload would web-read a server that cannot be reached and can
+            // drop the note that was just saved locally.
+            this.state.jumpThreadPresent++;
+            return;
+        }
         super.onPostCallback();
     },
 
@@ -504,21 +668,49 @@ const chatterPatch = {
         }
     },
 
+    /**
+     * Save a new record, then run onReady once it has an id.
+     * A failed save keeps the callback for this record. Discarding it or
+     * opening another record clears the callback in changeThread.
+     */
+    async _openAfterRecordExists(onReady) {
+        if (this.state.thread.id) {
+            return onReady(this.state.thread);
+        }
+        if (!this.webChatterProps.saveRecord) {
+            return;
+        }
+        const record = this.webChatterProps.record;
+        this.onThreadCreated = onReady;
+        this._pendingThreadRecord = undefined;
+        const saved = await this.webChatterProps.saveRecord();
+        if (!saved) {
+            this._pendingThreadRecord = record;
+            return;
+        }
+        const resId = this.webChatterProps.record?.resId;
+        if (this.onThreadCreated && resId && !this.state.thread?.id) {
+            this.changeThread(this.threadModel(), resId);
+        } else if (this.onThreadCreated && this.state.thread?.id) {
+            const pending = this.onThreadCreated;
+            this.onThreadCreated = null;
+            await pending(this.state.thread);
+        }
+    },
+
     async scheduleActivity() {
         this.closeSearch();
         const schedule = async (thread) => {
             await this.store.scheduleActivity(thread.model, [thread.id]);
+            if (this.store.env.services.offline?.isOffline?.()) {
+                return;
+            }
             this.load(thread, ["activities", "messages"]);
             if (this.webChatterProps.hasParentReloadOnActivityChanged) {
                 await this.reloadParentView();
             }
         };
-        if (this.state.thread.id) {
-            schedule(this.state.thread);
-        } else {
-            this.onThreadCreated = schedule;
-            this.webChatterProps.saveRecord?.();
-        }
+        await this._openAfterRecordExists(schedule);
     },
 
     toggleActivities() {
@@ -533,7 +725,7 @@ const chatterPatch = {
             : [...selectedAttachmentIds, attachment.id];
     },
 
-    toggleComposer(mode = false, { force = false } = {}) {
+    async toggleComposer(mode = false, { force = false } = {}) {
         this.closeSearch();
         const toggle = async () => {
             if (!force && this.state.composerType === mode) {
@@ -545,12 +737,7 @@ const chatterPatch = {
                 this.state.composerType = mode;
             }
         };
-        if (this.state.thread.id) {
-            toggle();
-        } else {
-            this.onThreadCreated = toggle;
-            this.webChatterProps.saveRecord?.();
-        }
+        await this._openAfterRecordExists(toggle);
     },
 
     toggleScheduledMessages() {
