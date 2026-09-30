@@ -201,6 +201,49 @@ test("scheduledORM", async () => {
 });
 
 test.tags("desktop");
+test("systray renders when a queued entry has no extras", async () => {
+    const setOffline = mockOffline();
+    onRpc("/web/webclient/version_info", () => new Response("", { status: 502 }), { pure: true });
+    await mountWithCleanup(WebClient);
+    await runAllTimers();
+    await setOffline(true);
+
+    const offline = getService(OfflinePlugin);
+    const legacy = JSON.parse(
+        JSON.stringify({
+            model: "partner",
+            method: "web_save",
+            args: [[]],
+            kwargs: {},
+            extras: undefined,
+        })
+    );
+    offline._ormToSync()["legacy"] = { key: "legacy", value: legacy };
+    offline._ormToSync()["bad"] = {
+        key: "bad",
+        value: {
+            model: "lead",
+            method: "web_save",
+            args: [[]],
+            kwargs: {},
+            extras: {
+                error: "This is an error message",
+                timeStamp: 2,
+                displayName: "Broken",
+                actionName: "CRM",
+            },
+        },
+    };
+
+    await animationFrame();
+    expect(`.o_menu_systray .o_nav_entry [data-icon='error']`).toHaveCount(1);
+    await contains(`.o_menu_systray .o_nav_entry [data-icon='error']`).click();
+    expect(".o-dropdown--menu .o-dropdown-item").toHaveCount(2);
+    expect(".o-dropdown--menu").toHaveText(/partner/);
+    expect(".o-dropdown--menu").toHaveText(/Broken/);
+});
+
+test.tags("desktop");
 test("scheduledORM: inError", async () => {
     const setOffline = mockOffline();
     onRpc("/web/webclient/version_info", () => new Response("", { status: 502 }), { pure: true });

@@ -695,6 +695,12 @@ export class OfflinePlugin extends Plugin {
     _sortedReadyEntries(entries) {
         const remap = this._idRemap();
         const ormQueue = this._ormToSync();
+        for (const { value } of Object.values(entries)) {
+            // Rows already in IndexedDB may have lost extras on stringify.
+            if (!value.extras) {
+                value.extras = {};
+            }
+        }
         return Object.values(entries)
             .filter(({ value }) => {
                 const extras = value.extras || {};
@@ -709,9 +715,7 @@ export class OfflinePlugin extends Plugin {
                 }
                 return true;
             })
-            .sort(
-                (s1, s2) => (s1.value.extras?.timeStamp || 0) - (s2.value.extras?.timeStamp || 0)
-            );
+            .sort((s1, s2) => (s1.value.extras.timeStamp || 0) - (s2.value.extras.timeStamp || 0));
     }
 
     async _syncORMEntries() {

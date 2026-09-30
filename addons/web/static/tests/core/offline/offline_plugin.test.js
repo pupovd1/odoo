@@ -408,6 +408,13 @@ test("scheduleORM", async () => {
         },
     });
 
+    const stored = JSON.parse(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
+            (row) => row.key === "f5b90cfd"
+        ).value
+    );
+    expect(stored.extras).toEqual({});
+
     offline.removeScheduledORM("f5b90cfd");
     expect(offline._ormToSync()).toEqual({
         22: {
@@ -440,6 +447,50 @@ test("scheduleORM", async () => {
             model: "partner",
         },
     ]);
+});
+
+test("queued ORM entry stored without extras still syncs", async () => {
+    const setOffline = mockOffline();
+    onRpc("partner", "create", ({ args }) => {
+        expect.step(`create:${args[0]}`);
+        return args[0];
+    });
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await setOffline(true);
+
+    // What IndexedDB keeps after JSON.stringify({ extras: undefined }).
+    await offline._idb.write(
+        OfflinePlugin.ORM_SYNC_TABLE_NAME,
+        "legacy",
+        JSON.stringify({
+            model: "partner",
+            method: "create",
+            args: [22],
+            kwargs: {},
+            extras: undefined,
+        })
+    );
+    offline.scheduleORM("partner", "create", [23], {}, {
+        id: "newer",
+        extras: { timeStamp: 10 },
+    });
+
+    const legacy = JSON.parse(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
+            (row) => row.key === "legacy"
+        ).value
+    );
+    expect(legacy.extras).toBe(undefined);
+    offline._ormToSync()["legacy"] = { key: "legacy", value: legacy };
+    expect(() => offline._sortedReadyEntries(offline._ormToSync())).not.toThrow();
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(1500);
+    await runAllTimers();
+    await expect.waitForSteps(["create:22", "create:23"]);
 });
 
 test("syncORM ConnectionLost", async () => {

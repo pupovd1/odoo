@@ -28,6 +28,10 @@ const STATUS = {
     PENDING: { label: _t("Pending"), color: 3 },
 };
 
+function queueExtras(value) {
+    return value.extras || {};
+}
+
 const METHOD_STATUS = {
     web_save: null, // handled specially
     unlink: STATUS.DELETED,
@@ -68,13 +72,15 @@ class OfflineSystray extends Component {
         }
         const sections = Object.entries(Object.groupBy(items, (item) => item.actionName || ""));
         sections.forEach(([_name, sectionItems]) => {
-            sectionItems.sort((itemA, itemB) => itemA.timeStamp - itemB.timeStamp);
+            sectionItems.sort(
+                (itemA, itemB) => (itemA.timeStamp || 0) - (itemB.timeStamp || 0)
+            );
         });
         return sections;
     });
 
     _buildOrmItem(key, value) {
-        const extras = value.extras || {};
+        const extras = queueExtras(value);
         const timeStamp = extras.timeStamp
             ? formatDateTime(DateTime.fromMillis(extras.timeStamp))
             : "";
@@ -113,7 +119,7 @@ class OfflineSystray extends Component {
     }
 
     _buildHttpItem(key, value) {
-        const extras = value.extras || {};
+        const extras = queueExtras(value);
         const timeStamp = extras.timeStamp
             ? formatDateTime(DateTime.fromMillis(extras.timeStamp))
             : "";
@@ -141,7 +147,7 @@ class OfflineSystray extends Component {
     }
 
     isClickable(value) {
-        const extras = value.extras || {};
+        const extras = queueExtras(value);
         const resId = value.args[0]?.length ? value.args[0][0] : false;
         return (
             value.method === "web_save" &&
@@ -153,8 +159,12 @@ class OfflineSystray extends Component {
 
     inError = computed(
         () =>
-            Object.values(this.offlinePlugin._ormToSync()).find(({ value }) => value.extras?.error) ||
-            Object.values(this.offlinePlugin._httpToSync()).find(({ value }) => value.extras?.error)
+            Object.values(this.offlinePlugin._ormToSync()).find(
+                ({ value }) => queueExtras(value).error
+            ) ||
+            Object.values(this.offlinePlugin._httpToSync()).find(
+                ({ value }) => queueExtras(value).error
+            )
     );
 
     get labelColor() {
@@ -236,8 +246,9 @@ class OfflineSystray extends Component {
 
     async openView(id) {
         const { value } = this.offlinePlugin._ormToSync()[id];
+        const extras = queueExtras(value);
         const resId = value.args[0]?.[0];
-        await this.actionService.doAction(value.extras.actionId, {
+        await this.actionService.doAction(extras.actionId, {
             viewType: "form",
             props: { offlineId: id, resId },
             clearBreadcrumbs: true,
