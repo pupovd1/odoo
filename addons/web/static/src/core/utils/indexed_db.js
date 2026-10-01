@@ -175,12 +175,14 @@ export class IndexedDB {
     async _deleteDatabase(callback) {
         return new Promise((resolve) => {
             const request = indexedDB.deleteDatabase(this.name);
-            request.onsuccess = () => {
+            const done = () => {
                 Promise.resolve(callback()).then(resolve);
             };
+            request.onsuccess = done;
+            request.onblocked = done;
             request.onerror = (event) => {
                 console.error(`IndexedDB delete error: ${event.target.error?.message}`);
-                Promise.resolve(callback()).then(resolve);
+                done();
             };
         });
     }

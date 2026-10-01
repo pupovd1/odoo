@@ -112,6 +112,7 @@ function installPWAItem() {
 
 function logOutItem() {
     const pwa = useService("pwa");
+    const offline = useService("offline");
     let route = "/web/session/logout";
     if (pwa.isScopedApp) {
         route += `?redirect=${encodeURIComponent(pwa.startUrl)}`;
@@ -122,6 +123,7 @@ function logOutItem() {
         description: _t("Log out"),
         callback: async () => {
             browser.navigator.serviceWorker?.controller?.postMessage("user_logout");
+            await offline.clearPersistentData();
             const url = await post(route, { csrf_token: odoo.csrf_token }, "url");
             redirect(url);
         },

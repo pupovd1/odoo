@@ -1,8 +1,11 @@
 import { Component, proxy, xml } from "@odoo/owl";
 import { browser } from "@web/core/browser/browser";
-import { rpc } from "@web/core/network/rpc";
+import { ConnectionLostError, rpc } from "@web/core/network/rpc";
 
-import { OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { callOrScheduleHTTP, callOrScheduleORM } from "@web/core/offline/offline_helpers";
+import { collectOfflineTempIds, OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { IndexedDB } from "@web/core/utils/indexed_db";
+import { session } from "@web/session";
 
 import { advanceTime, animationFrame, expect, runAllTimers, test, tick } from "@odoo/hoot";
 import {
@@ -11,16 +14,32 @@ import {
     makeTestApp,
     mockOffline,
     mountWithCleanup,
+    defineModels,
+    fields,
+    models,
+    mountView,
     mountWithSearch,
     onRpc,
     patchWithCleanup,
+    removeFacet,
     toggleMenuItem,
     toggleMenuItemOption,
     toggleSearchBarMenu,
 } from "@web/../tests/web_test_helpers";
 
 import { SearchBar } from "@web/search/search_bar/search_bar";
-import { defineSearchBarModels } from "../../search/search_bar_menu/models";
+import { defineSearchBarModels, Foo } from "../../search/search_bar_menu/models";
+
+class ResUsers extends models.Model {
+    _name = "res.users";
+    name = fields.Char();
+    _records = [{ id: 7, name: "Mitchell" }];
+
+    has_group() {
+        return true;
+    }
+}
+defineModels([ResUsers]);
 
 defineSearchBarModels();
 
@@ -408,7 +427,8 @@ test("scheduleORM", async () => {
         },
     });
 
-    const stored = JSON.parse(
+    await offline._flushPersists();
+    const stored = await offline._crypto.decrypt(
         (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
             (row) => row.key === "f5b90cfd"
         ).value
@@ -458,18 +478,26 @@ test("queued ORM entry stored without extras still syncs", async () => {
 
     await makeTestApp();
     const offline = getService(OfflinePlugin);
+    await offline._loaded;
     await setOffline(true);
 
-    // What IndexedDB keeps after JSON.stringify({ extras: undefined }).
+    // Sealed before extras was always present: JSON encryption drops undefined.
+    const sealed = await offline._crypto.encrypt({
+        model: "partner",
+        method: "create",
+        args: [22],
+        kwargs: {},
+    });
+    await offline._idb.write(OfflinePlugin.ORM_SYNC_TABLE_NAME, "legacy", sealed);
+    // A plaintext row is not this user's sealed payload and must not sync.
     await offline._idb.write(
         OfflinePlugin.ORM_SYNC_TABLE_NAME,
-        "legacy",
+        "plain",
         JSON.stringify({
             model: "partner",
             method: "create",
-            args: [22],
+            args: [99],
             kwargs: {},
-            extras: undefined,
         })
     );
     offline.scheduleORM("partner", "create", [23], {}, {
@@ -477,14 +505,14 @@ test("queued ORM entry stored without extras still syncs", async () => {
         extras: { timeStamp: 10 },
     });
 
-    const legacy = JSON.parse(
-        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
-            (row) => row.key === "legacy"
-        ).value
-    );
-    expect(legacy.extras).toBe(undefined);
-    offline._ormToSync()["legacy"] = { key: "legacy", value: legacy };
-    expect(() => offline._sortedReadyEntries(offline._ormToSync())).not.toThrow();
+    await offline._updateScheduledORMList();
+    expect(offline._ormToSync().legacy.value.extras).toEqual({});
+    expect(offline._ormToSync().plain).toBe(undefined);
+    expect(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).some(
+            (row) => row.key === "plain"
+        )
+    ).toBe(false);
 
     await setOffline(false);
     await runAllTimers();
@@ -712,6 +740,35 @@ test("id remap is reloaded from IndexedDB after the in-memory map is cleared", a
     expect(offline.resolveId(tempId)).toBe(15);
 });
 
+test("offline store is scoped to the user and cleared on logout", async () => {
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await offline._loaded;
+    expect(offline._idb.name).toBe(`offline-${session.db}-${session.uid}`);
+
+    const foreign = new IndexedDB(`offline-${session.db}-999`, "foreign-user");
+    await foreign.write(OfflinePlugin.ORM_SYNC_TABLE_NAME, "foreign-key", {
+        ciphertext: new ArrayBuffer(8),
+        iv: new Uint8Array(12),
+    });
+
+    offline.scheduleORM("partner", "create", [1], {}, { id: "mine", extras: { timeStamp: 1 } });
+    await offline._updateScheduledORMList();
+    expect(offline._ormToSync().mine.value.model).toBe("partner");
+    expect(offline._ormToSync()["foreign-key"]).toBe(undefined);
+    expect((await foreign.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).map((row) => row.key)).toEqual([
+        "foreign-key",
+    ]);
+
+    await offline.clearPersistentData();
+    expect(offline._ormToSync()).toEqual({});
+    expect(await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).toEqual([]);
+    expect((await foreign.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).map((row) => row.key)).toEqual([
+        "foreign-key",
+    ]);
+    await foreign.deleteDatabase();
+});
+
 test("storeBlob and removeBlob", async () => {
     await makeTestApp();
     const offline = getService(OfflinePlugin);
@@ -721,4 +778,202 @@ test("storeBlob and removeBlob", async () => {
     expect(data.name).toBe("a.txt");
     await offline.removeBlob(key);
     expect(await offline.getBlob(key)).toBe(undefined);
+});
+
+test("callOrScheduleORM and callOrScheduleHTTP", async () => {
+    onRpc("/mail/message/post", () => ({ id: 3 }));
+    onRpc("/rpc/offline", () => new Response("", { status: 502 }), { pure: true });
+    onRpc("/mail/message/delete", () => {
+        throw new Error("nope");
+    });
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    const orm = {
+        async call(_model, method) {
+            if (method === "write") {
+                throw new ConnectionLostError("/partner/write");
+            }
+            if (method === "unlink") {
+                throw new Error("nope");
+            }
+            return [{ id: 1 }];
+        },
+    };
+
+    expect(await callOrScheduleORM(offline, orm, "partner", "web_save", [[1]], {})).toEqual([
+        { id: 1 },
+    ]);
+    expect(
+        await callOrScheduleORM(offline, orm, "partner", "write", [[1]], {}, {
+            extras: { displayName: "Pat" },
+        })
+    ).toBe(null);
+    expect(Object.values(offline._ormToSync()).some((entry) => entry.value.method === "write")).toBe(
+        true
+    );
+    try {
+        await callOrScheduleORM(offline, orm, "partner", "unlink", [[1]], {});
+        expect(false).toBe(true);
+    } catch (error) {
+        expect(error.message).toInclude("nope");
+    }
+
+    expect(await callOrScheduleHTTP(offline, "/mail/message/post", { body: "ok" })).toEqual({
+        id: 3,
+    });
+    expect(
+        await callOrScheduleHTTP(offline, "/rpc/offline", { a: 1 }, { extras: { displayName: "x" } })
+    ).toBe(null);
+    try {
+        await callOrScheduleHTTP(offline, "/mail/message/delete", {});
+        expect(false).toBe(true);
+    } catch (error) {
+        expect(error.message).toInclude("nope");
+    }
+});
+
+test("retry, copy sync, http blobs, and many2x cache", async () => {
+    const setOffline = mockOffline();
+    onRpc("partner", "copy", () => [55]);
+    onRpc("/mail/message/post", async (request) => {
+        const { params } = await request.json();
+        expect.step(params.body);
+        if (params.body === "boom") {
+            const error = new Error("boom");
+            error.data = { name: "UserError", message: "no" };
+            throw error;
+        }
+        return { id: 1 };
+    });
+
+    await makeTestApp();
+    await runAllTimers();
+    const offline = getService(OfflinePlugin);
+    offline.retryScheduledORM("missing");
+    offline.retryScheduledHTTP("missing");
+
+    await setOffline(true);
+    const ormKey = offline.scheduleORM("partner", "write", [[1]], {}, {
+        extras: { error: "stuck", timeStamp: 1, dependsOn: "parent" },
+    });
+    offline.retryScheduledORM(ormKey);
+    expect(offline._ormToSync()[ormKey].value.extras.error).toBe(undefined);
+
+    const httpKey = offline.scheduleHTTP("/mail/message/post", { body: "keep" }, {
+        extras: { error: "stuck", timeStamp: 1, blobKeys: ["blob-a"] },
+        blobKeys: ["blob-a"],
+    });
+    offline.retryScheduledHTTP(httpKey);
+    expect(offline._httpToSync()[httpKey].value.extras.error).toBe(undefined);
+    offline.removeScheduledHTTP(httpKey);
+
+    await offline.storeBlob("blob-a", { name: "a.txt" });
+    offline.scheduleORM("partner", "copy", [[1]], {}, { extras: { timeStamp: 2 } });
+    offline.scheduleHTTP("/mail/message/post", { body: "hi" }, {
+        extras: { timeStamp: 3 },
+        blobKeys: ["blob-a"],
+    });
+    offline.scheduleHTTP("/mail/message/post", { body: "boom" }, { extras: { timeStamp: 4 } });
+
+    const tempId = offline.nextTempId();
+    const found = collectOfflineTempIds({ nested: [tempId, { again: tempId }], plain: "x" });
+    expect([...found]).toEqual([tempId]);
+    expect(collectOfflineTempIds(tempId).has(tempId)).toBe(true);
+    expect(collectOfflineTempIds(null).size).toBe(0);
+    expect(offline.resolveId(false)).toBe(false);
+    expect(offline.resolveId(null)).toBe(null);
+    expect(offline.resolveId(undefined)).toBe(undefined);
+
+    await offline.cacheMany2XSearch("crm.stage", [
+        { id: 1, display_name: "New" },
+        { id: 2, display_name: "Won\nextra" },
+    ]);
+    const searched = await offline.searchMany2XRecords("crm.stage", "new");
+    expect(searched.map((record) => record.display_name)).toEqual(["New"]);
+    expect((await offline.searchMany2XRecords("crm.stage", "")).length).toBe(2);
+    expect((await offline.readMany2XRecords("crm.stage", [2]))[0].display_name).toBe("Won");
+
+    await setOffline(false);
+    await runAllTimers();
+    await advanceTime(2500);
+    await runAllTimers();
+
+    expect(await offline.getBlob("blob-a")).toBe(undefined);
+    const failed = Object.values(offline._httpToSync()).find((entry) => entry.value.extras.error);
+    expect(failed.value.extras.error).toInclude("boom");
+    await expect.waitForSteps(["hi", "boom"]);
+});
+
+test("offline search bar filters, types, and shows more cached searches", async () => {
+    expect.errors(2);
+    const previousRecords = Foo._records;
+    Foo._records = [
+        { id: 1, foo: "blip" },
+        { id: 2, foo: "blip" },
+        { id: 3, foo: "yop" },
+        { id: 4, foo: "gnap" },
+    ];
+    const setOffline = mockOffline();
+    try {
+        await mountView({
+            resModel: "foo",
+            type: "kanban",
+            arch: `
+                <kanban>
+                    <templates>
+                        <t t-name="card"><field name="foo"/></t>
+                    </templates>
+                </kanban>`,
+            searchViewArch: `
+                <search>
+                    <filter string="Filter Blip" name="blip" domain="[['foo', '=', 'blip']]"/>
+                    <filter string="GroupBy Blip" name="groupby_blip" context="{'group_by': 'foo'}"/>
+                    <filter string="Empty Filter" name="empty" domain="[['foo', '=', 'no record']]"/>
+                </search>`,
+            config: { actionId: 234 },
+        });
+
+        await toggleSearchBarMenu();
+        await toggleMenuItem("GroupBy Blip");
+        await toggleMenuItem("Filter Blip");
+        await toggleMenuItem("Empty Filter");
+        await removeFacet("Empty Filter");
+
+        const offline = getService(OfflinePlugin);
+        for (let i = 0; i < 8; i++) {
+            await offline.setAvailableOffline(234, "kanban", {
+                search: {
+                    key: `extra-${i}`,
+                    domain: [],
+                    context: {},
+                    groupBy: [],
+                    facets: [{ type: "filter", title: `Extra ${i}`, values: ["x"], separator: "or" }],
+                },
+            });
+        }
+
+        await setOffline(true);
+        expect(".o_offline_search_bar").toHaveCount(1);
+        await contains(".o_offline_search_bar .o_searchview_facet [data-icon='close']").click();
+        await contains(".o_offline_search_bar .o_searchview_dropdown_toggler").click();
+        await contains(".o_search_bar_menu_offline .o-dropdown-item:eq(0)").click();
+
+        const input = document.querySelector(".o_offline_search_bar input");
+        input.value = "zzzz-no-match";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await animationFrame();
+        input.value = "blip";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await animationFrame();
+        input.value = "";
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        await animationFrame();
+
+        expect.verifyErrors([
+            `Error: Connection to "/web/dataset/call_kw/foo/web_search_read" couldn't be established or was interrupted`,
+            `Error: Connection to "/web/dataset/call_kw/foo/web_read_group" couldn't be established or was interrupted`,
+        ]);
+    } finally {
+        Foo._records = previousRecords;
+    }
 });

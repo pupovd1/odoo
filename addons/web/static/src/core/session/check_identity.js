@@ -137,10 +137,12 @@ export class CheckIdentityDialog extends Component {
     });
 
     setup() {
+        const offline = useService("offline");
         this.formProps = {
             close: this.props.close,
         };
         this.env.dialogData.dismiss = async () => {
+            await offline.clearPersistentData();
             const url = await post("/web/session/logout", { csrf_token: odoo.csrf_token }, "url");
             redirect(url);
         };
