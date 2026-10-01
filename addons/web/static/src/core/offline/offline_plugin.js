@@ -19,6 +19,7 @@ import { registry } from "@web/core/registry";
 import { services } from "@web/core/services";
 import { IndexedDB } from "@web/core/utils/indexed_db";
 import { hashCode } from "@web/core/utils/strings";
+import { user } from "@web/core/user";
 import { session } from "@web/session";
 
 const IS_READY = Symbol("ready");
@@ -76,7 +77,8 @@ export class OfflinePlugin extends Plugin {
     static LEGACY_DATABASE_NAME = "offline";
 
     static databaseName() {
-        return `offline-${session.db}-${session.uid}`;
+        // session.uid is deleted once user.js has read it. user.userId is the copy that remains.
+        return `offline-${session.db}-${user.userId}`;
     }
 
     debugMode = usePlugin(DebugModePlugin);
@@ -358,6 +360,9 @@ export class OfflinePlugin extends Plugin {
 
     removeScheduledORM(key) {
         delete this._ormToSync()[key];
+        if (this._wiping) {
+            return;
+        }
         this._invalidateSeal(OfflinePlugin.ORM_SYNC_TABLE_NAME, key);
         this._idb.delete(OfflinePlugin.ORM_SYNC_TABLE_NAME, key);
     }
@@ -413,6 +418,9 @@ export class OfflinePlugin extends Plugin {
 
     removeScheduledHTTP(key) {
         delete this._httpToSync()[key];
+        if (this._wiping) {
+            return;
+        }
         this._invalidateSeal(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key);
         this._idb.delete(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key);
     }
@@ -454,6 +462,9 @@ export class OfflinePlugin extends Plugin {
     }
 
     async removeBlob(key) {
+        if (this._wiping) {
+            return;
+        }
         this._invalidateSeal(OfflinePlugin.BLOB_TABLE_NAME, key);
         return this._idb.delete(OfflinePlugin.BLOB_TABLE_NAME, key);
     }
@@ -508,8 +519,11 @@ export class OfflinePlugin extends Plugin {
      * Remove this user's offline database. Called on logout, before redirect.
      */
     async clearPersistentData() {
-        // Drop every in-flight seal so it cannot recreate the database after
-        // this delete.
+        // Stop sync and late seals before the delete. A pass already inside
+        // _syncORMEntries checks this flag before it writes again.
+        this._wiping = true;
+        browser.clearTimeout(this._startupTimer);
+        this._startupTimer = null;
         this._sealTokens = new Map();
         this._ormToSync.set({});
         this._httpToSync.set({});
@@ -670,7 +684,7 @@ export class OfflinePlugin extends Plugin {
     // -------------------------------------------------------------------------
 
     _syncAll() {
-        if (this._destroyed || !window.isSecureContext) {
+        if (this._destroyed || this._wiping || !window.isSecureContext) {
             return Promise.resolve();
         }
         browser.clearTimeout(this._startupTimer);
@@ -681,10 +695,11 @@ export class OfflinePlugin extends Plugin {
         if (this._syncAllPromise) {
             this._syncAgain = true;
             return this._syncAllPromise.then(() => {
-                if (this._syncAgain) {
+                if (this._syncAgain && !this._wiping) {
                     this._syncAgain = false;
                     return this._syncAll();
                 }
+                this._syncAgain = false;
             });
         }
         const done = Promise.withResolvers();
@@ -693,12 +708,28 @@ export class OfflinePlugin extends Plugin {
         });
         // Some test environments invoke the lock callback without awaiting it.
         navigator.locks.request("db-sync", async () => {
+            if (this._wiping) {
+                done.resolve();
+                return;
+            }
             this.syncingORM.set(true);
             try {
                 await this._updateScheduledORMList();
+                if (this._wiping) {
+                    done.resolve();
+                    return;
+                }
                 await this._updateScheduledHTTPList();
                 await this._loadIdRemap();
+                if (this._wiping) {
+                    done.resolve();
+                    return;
+                }
                 await this._syncORMEntries();
+                if (this._wiping) {
+                    done.resolve();
+                    return;
+                }
                 await this._syncHTTPEntries();
                 done.resolve();
             } catch (error) {
@@ -783,8 +814,14 @@ export class OfflinePlugin extends Plugin {
             }
             let progressed = false;
             for (const { key, value } of ready) {
+                if (this._wiping) {
+                    return;
+                }
                 if (index !== 0) {
                     await new Promise((r) => browser.setTimeout(r, 1000));
+                }
+                if (this._wiping) {
+                    return;
                 }
                 index++;
                 try {
@@ -860,8 +897,14 @@ export class OfflinePlugin extends Plugin {
             }
             let progressed = false;
             for (const { key, value } of ready) {
+                if (this._wiping) {
+                    return;
+                }
                 if (index !== 0) {
                     await new Promise((r) => browser.setTimeout(r, 1000));
+                }
+                if (this._wiping) {
+                    return;
                 }
                 index++;
                 try {
@@ -952,13 +995,16 @@ export class OfflinePlugin extends Plugin {
     }
 
     _writeSealed(table, key, value) {
+        if (this._wiping) {
+            return Promise.resolve();
+        }
         this._assertCanPersist();
         const token = this._nextSealToken(table, key);
         const id = this._sealId(table, key);
         const job = this._crypto.encrypt(value).then(async (sealed) => {
-            // A remove can land while encrypt is in flight. Writing afterwards
-            // would put the row back for the next sync.
-            if (this._sealTokens.get(id) !== token) {
+            // A remove or logout can land while encrypt is in flight. Writing
+            // afterwards would put the row back for the next sync.
+            if (this._wiping || this._sealTokens.get(id) !== token) {
                 return;
             }
             await this._idb.write(table, key, sealed);
@@ -968,7 +1014,11 @@ export class OfflinePlugin extends Plugin {
     }
 
     async _flushPersists() {
-        await this._pendingPersists;
+        try {
+            await this._pendingPersists;
+        } catch {
+            // A rejected seal must not block logout or the next read.
+        }
     }
 
     /**

@@ -5,6 +5,7 @@ import { ConnectionLostError, rpc } from "@web/core/network/rpc";
 import { callOrScheduleHTTP, callOrScheduleORM } from "@web/core/offline/offline_helpers";
 import { collectOfflineTempIds, OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { IndexedDB } from "@web/core/utils/indexed_db";
+import { user } from "@web/core/user";
 import { session } from "@web/session";
 
 import { advanceTime, animationFrame, expect, runAllTimers, test, tick } from "@odoo/hoot";
@@ -741,10 +742,13 @@ test("id remap is reloaded from IndexedDB after the in-memory map is cleared", a
 });
 
 test("offline store is scoped to the user and cleared on logout", async () => {
+    // user.js removes session.uid. The store must use the id it kept.
+    delete session.uid;
+    expect(typeof user.userId).toBe("number");
     await makeTestApp();
     const offline = getService(OfflinePlugin);
     await offline._loaded;
-    expect(offline._idb.name).toBe(`offline-${session.db}-${session.uid}`);
+    expect(offline._idb.name).toBe(`offline-${session.db}-${user.userId}`);
 
     const foreign = new IndexedDB(`offline-${session.db}-999`, "foreign-user");
     await foreign.write(OfflinePlugin.ORM_SYNC_TABLE_NAME, "foreign-key", {
@@ -767,6 +771,16 @@ test("offline store is scoped to the user and cleared on logout", async () => {
         "foreign-key",
     ]);
     await foreign.deleteDatabase();
+});
+
+test("logout deletes the store when a seal fails", async () => {
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    offline._crypto.encrypt = () => Promise.reject(new Error("seal failed"));
+    offline.scheduleORM("partner", "create", [1], {}, { id: "bad", extras: { timeStamp: 1 } });
+    await offline.clearPersistentData();
+    expect(offline._ormToSync()).toEqual({});
+    expect(await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).toEqual([]);
 });
 
 test("storeBlob and removeBlob", async () => {
