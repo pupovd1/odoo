@@ -19,6 +19,7 @@ import { registry } from "@web/core/registry";
 import { services } from "@web/core/services";
 import { IndexedDB } from "@web/core/utils/indexed_db";
 import { hashCode } from "@web/core/utils/strings";
+import { user } from "@web/core/user";
 import { session } from "@web/session";
 
 const IS_READY = Symbol("ready");
@@ -54,6 +55,9 @@ class FakeIndexedDB {
     getAllEntries() {
         return Promise.resolve([]);
     }
+    deleteDatabase() {
+        return Promise.resolve();
+    }
 }
 
 export class OfflinePlugin extends Plugin {
@@ -69,13 +73,23 @@ export class OfflinePlugin extends Plugin {
     static TEMP_ID_PREFIX = "offline_tmp_";
 
     static SELECTORS_TO_DISABLE = ["button:not([data-available-offline]):not([disabled])"];
+    /** Previous database name, shared by every user of this origin. */
+    static LEGACY_DATABASE_NAME = "offline";
+
+    static databaseName() {
+        // session.uid is deleted once user.js has read it. user.userId is the copy that remains.
+        return `offline-${session.db}-${user.userId}`;
+    }
 
     debugMode = usePlugin(DebugModePlugin);
     orm = usePlugin(ORM);
 
     _idb = window.isSecureContext
-        ? markRaw(new IndexedDB("offline", session.registry_hash + CRYPTO_ALGO))
+        ? markRaw(new IndexedDB(OfflinePlugin.databaseName(), session.registry_hash + CRYPTO_ALGO))
         : new FakeIndexedDB();
+    _pendingPersists = Promise.resolve();
+    /** Bumped on each write or delete so a late seal cannot restore a removed row. */
+    _sealTokens = new Map();
     _crypto =
         window.isSecureContext &&
         session.browser_cache_secret &&
@@ -136,21 +150,27 @@ export class OfflinePlugin extends Plugin {
             this._visited.set({});
         });
 
-        Promise.all([
+        this._loaded = Promise.all([
+            this._dropLegacyDatabase(),
             this._updateScheduledORMList(),
             this._updateScheduledHTTPList(),
             this._loadIdRemap(),
-        ]).then(
-            async () => {
-                if (!this.isOffline()) {
-                    // wait a bit for the webclient to be started before synchronizing
-                    await new Promise((r) => browser.setTimeout(r, 3000));
-                    this._syncAll();
-                }
+        ]);
+        this._loaded.then(() => {
+            if (this._destroyed || this.isOffline()) {
+                return;
             }
-        );
+            // wait a bit for the webclient to be started before synchronizing
+            this._startupTimer = browser.setTimeout(() => {
+                this._startupTimer = null;
+                this._syncAll();
+            }, 3000);
+        });
 
-        onWillDestroy(() => this._cleanup());
+        onWillDestroy(() => {
+            this._destroyed = true;
+            this._cleanup();
+        });
     }
 
     /**
@@ -239,14 +259,16 @@ export class OfflinePlugin extends Plugin {
             return [];
         } else if (this._visited()[actionId]?.views[viewType] === true) {
             // Searches for that action/view type haven't been retrieve from idb yet
-            this._visited()[actionId].views[viewType] = this._idb
-                .read(this._visitedUITable(), this._generateKey(actionId, viewType))
-                .then((r) =>
-                    Object.values(r || {})
-                        .reverse() // last visited first
-                        .sort(({ count: c1 }, { count: c2 }) => c2 - c1)
-                        .map(({ search }) => search)
-                );
+            this._visited()[actionId].views[viewType] = this._readSealed(
+                this._visitedUITable(),
+                this._generateKey(actionId, viewType)
+            ).then((r) => {
+                const searches = r && typeof r === "object" ? r : {};
+                return Object.values(searches)
+                    .reverse() // last visited first
+                    .sort(({ count: c1 }, { count: c2 }) => c2 - c1)
+                    .map(({ search }) => search);
+            });
         }
         const searches = await this._visited()[actionId]?.views[viewType];
         return [...searches];
@@ -283,21 +305,23 @@ export class OfflinePlugin extends Plugin {
      * @param {Object} [params.search] the current search view state
      */
     async setAvailableOffline(actionId, viewType, { resId, search }) {
-        if (!this.isOffline()) {
-            const key = this._generateKey(actionId, viewType, resId);
-            let value;
-            if (["form", "kanban_quick_create", "list_quick_create"].includes(viewType)) {
-                value = true;
-            } else {
-                value = (await this._idb.read(this._visitedUITable(), key)) || {};
-                let count = value[search.key]?.count || 0;
-                search = value[search.key]?.search || search; // keep original search (no "Custom Filter")
-                search = cloneForIndexedDB(search);
-                delete value[search.key]; // delete and re-add to mark it as "last visited"
-                value[search.key] = { count: ++count, search };
-            }
-            return this._idb.write(this._visitedUITable(), key, value);
+        if (this.isOffline() || !this._crypto) {
+            return;
         }
+        const key = this._generateKey(actionId, viewType, resId);
+        let value;
+        if (["form", "kanban_quick_create", "list_quick_create"].includes(viewType)) {
+            value = true;
+        } else {
+            const stored = await this._readSealed(this._visitedUITable(), key);
+            value = stored && typeof stored === "object" ? stored : {};
+            let count = value[search.key]?.count || 0;
+            search = value[search.key]?.search || search; // keep original search (no "Custom Filter")
+            search = cloneForIndexedDB(search);
+            delete value[search.key]; // delete and re-add to mark it as "last visited"
+            value[search.key] = { count: ++count, search };
+        }
+        return this._writeSealed(this._visitedUITable(), key, value);
     }
 
     // -------------------------------------------------------------------------
@@ -318,11 +342,7 @@ export class OfflinePlugin extends Plugin {
      * @param {Function} [options.rewrite] optional (value, idRemap) => value before replay
      */
     scheduleORM(model, method, args, kwargs, options = {}) {
-        if (!window.isSecureContext) {
-            throw new NonSecureContextError(
-                _t("Offline features not available in a non-secure context")
-            );
-        }
+        this._assertCanPersist();
         // Keep the caller's extras object when there is no dependency. The
         // queue key is a hash of that object, and a new timeStamp changes it.
         // An omitted extras must still be an object: JSON.stringify drops
@@ -334,12 +354,16 @@ export class OfflinePlugin extends Plugin {
         const value = { model, method, args, kwargs, extras };
         const key = options.id ?? hashCode(JSON.stringify(value));
         this._ormToSync()[key] = { key, value };
-        this._idb.write(OfflinePlugin.ORM_SYNC_TABLE_NAME, key, JSON.stringify(value));
+        this._writeSealed(OfflinePlugin.ORM_SYNC_TABLE_NAME, key, value);
         return key;
     }
 
     removeScheduledORM(key) {
         delete this._ormToSync()[key];
+        if (this._wiping) {
+            return;
+        }
+        this._invalidateSeal(OfflinePlugin.ORM_SYNC_TABLE_NAME, key);
         this._idb.delete(OfflinePlugin.ORM_SYNC_TABLE_NAME, key);
     }
 
@@ -377,11 +401,7 @@ export class OfflinePlugin extends Plugin {
      * @param {Object} [options.extras]
      */
     scheduleHTTP(route, params, options = {}) {
-        if (!window.isSecureContext) {
-            throw new NonSecureContextError(
-                _t("Offline features not available in a non-secure context")
-            );
-        }
+        this._assertCanPersist();
         const extras = { timeStamp: Date.now(), ...options.extras };
         if (options.dependsOn) {
             extras.dependsOn = options.dependsOn;
@@ -392,12 +412,16 @@ export class OfflinePlugin extends Plugin {
         const value = { route, params, extras };
         const key = options.id ?? hashCode(JSON.stringify({ route, params, extras: { timeStamp: extras.timeStamp } }));
         this._httpToSync()[key] = { key, value };
-        this._idb.write(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key, JSON.stringify(value));
+        this._writeSealed(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key, value);
         return key;
     }
 
     removeScheduledHTTP(key) {
         delete this._httpToSync()[key];
+        if (this._wiping) {
+            return;
+        }
+        this._invalidateSeal(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key);
         this._idb.delete(OfflinePlugin.HTTP_SYNC_TABLE_NAME, key);
     }
 
@@ -428,20 +452,20 @@ export class OfflinePlugin extends Plugin {
      * @param {Object} blobData
      */
     async storeBlob(key, blobData) {
-        if (!window.isSecureContext) {
-            throw new NonSecureContextError(
-                _t("Offline features not available in a non-secure context")
-            );
-        }
-        await this._idb.write(OfflinePlugin.BLOB_TABLE_NAME, key, blobData);
+        this._assertCanPersist();
+        await this._writeSealed(OfflinePlugin.BLOB_TABLE_NAME, key, blobData);
         return key;
     }
 
     async getBlob(key) {
-        return this._idb.read(OfflinePlugin.BLOB_TABLE_NAME, key);
+        return this._readSealed(OfflinePlugin.BLOB_TABLE_NAME, key);
     }
 
     async removeBlob(key) {
+        if (this._wiping) {
+            return;
+        }
+        this._invalidateSeal(OfflinePlugin.BLOB_TABLE_NAME, key);
         return this._idb.delete(OfflinePlugin.BLOB_TABLE_NAME, key);
     }
 
@@ -477,15 +501,36 @@ export class OfflinePlugin extends Plugin {
             return;
         }
         this._idRemap()[fromId] = realId;
-        return this._idb.write(OfflinePlugin.ID_REMAP_TABLE_NAME, String(fromId), realId);
+        if (!this._crypto) {
+            return;
+        }
+        return this._writeSealed(OfflinePlugin.ID_REMAP_TABLE_NAME, String(fromId), realId);
     }
 
     async _loadIdRemap() {
-        const table = (await this._idb.getAllEntries(OfflinePlugin.ID_REMAP_TABLE_NAME)) || [];
+        const table = await this._loadSealedEntries(OfflinePlugin.ID_REMAP_TABLE_NAME);
         const map = this._idRemap();
         for (const { key, value } of table) {
             map[key] = value;
         }
+    }
+
+    /**
+     * Remove this user's offline database. Called on logout, before redirect.
+     */
+    async clearPersistentData() {
+        // Stop sync and late seals before the delete. A pass already inside
+        // _syncORMEntries checks this flag before it writes again.
+        this._wiping = true;
+        browser.clearTimeout(this._startupTimer);
+        this._startupTimer = null;
+        this._sealTokens = new Map();
+        this._ormToSync.set({});
+        this._httpToSync.set({});
+        this._idRemap.set({});
+        this._visited.set({});
+        await this._flushPersists();
+        await this._idb.deleteDatabase();
     }
 
     get hasScheduledCalls() {
@@ -544,6 +589,7 @@ export class OfflinePlugin extends Plugin {
         this._onlineUI();
         this._observer?.disconnect();
         browser.clearTimeout(this._timeout);
+        browser.clearTimeout(this._startupTimer);
     }
 
     async _decryptAndFormat(offlineRes) {
@@ -637,22 +683,62 @@ export class OfflinePlugin extends Plugin {
     // ORM / HTTP Sync
     // -------------------------------------------------------------------------
 
-    async _syncAll() {
-        if (!window.isSecureContext) {
-            return;
+    _syncAll() {
+        if (this._destroyed || this._wiping || !window.isSecureContext) {
+            return Promise.resolve();
         }
-        await navigator.locks.request("db-sync", async () => {
+        browser.clearTimeout(this._startupTimer);
+        this._startupTimer = null;
+        // One pass at a time. A call that arrives while a pass is running
+        // schedules a single follow-up, so rows queued during the pass are
+        // not dropped and the same rows are not replayed in parallel.
+        if (this._syncAllPromise) {
+            this._syncAgain = true;
+            return this._syncAllPromise.then(() => {
+                if (this._syncAgain && !this._wiping) {
+                    this._syncAgain = false;
+                    return this._syncAll();
+                }
+                this._syncAgain = false;
+            });
+        }
+        const done = Promise.withResolvers();
+        this._syncAllPromise = done.promise.finally(() => {
+            this._syncAllPromise = null;
+        });
+        // Some test environments invoke the lock callback without awaiting it.
+        navigator.locks.request("db-sync", async () => {
+            if (this._wiping) {
+                done.resolve();
+                return;
+            }
             this.syncingORM.set(true);
-            await this._updateScheduledORMList();
-            await this._updateScheduledHTTPList();
-            await this._loadIdRemap();
             try {
+                await this._updateScheduledORMList();
+                if (this._wiping) {
+                    done.resolve();
+                    return;
+                }
+                await this._updateScheduledHTTPList();
+                await this._loadIdRemap();
+                if (this._wiping) {
+                    done.resolve();
+                    return;
+                }
                 await this._syncORMEntries();
+                if (this._wiping) {
+                    done.resolve();
+                    return;
+                }
                 await this._syncHTTPEntries();
+                done.resolve();
+            } catch (error) {
+                done.reject(error);
             } finally {
                 this.syncingORM.set(false);
             }
         });
+        return this._syncAllPromise;
     }
 
     /** @deprecated use _syncAll */
@@ -728,8 +814,14 @@ export class OfflinePlugin extends Plugin {
             }
             let progressed = false;
             for (const { key, value } of ready) {
+                if (this._wiping) {
+                    return;
+                }
                 if (index !== 0) {
                     await new Promise((r) => browser.setTimeout(r, 1000));
+                }
+                if (this._wiping) {
+                    return;
                 }
                 index++;
                 try {
@@ -805,8 +897,14 @@ export class OfflinePlugin extends Plugin {
             }
             let progressed = false;
             for (const { key, value } of ready) {
+                if (this._wiping) {
+                    return;
+                }
                 if (index !== 0) {
                     await new Promise((r) => browser.setTimeout(r, 1000));
+                }
+                if (this._wiping) {
+                    return;
                 }
                 index++;
                 try {
@@ -856,29 +954,151 @@ export class OfflinePlugin extends Plugin {
         }
     }
 
-    _parseSyncValue(raw) {
-        const value = JSON.parse(raw);
+    _assertCanPersist() {
+        if (!window.isSecureContext || !this._crypto) {
+            throw new NonSecureContextError(
+                _t("Offline features not available in a non-secure context")
+            );
+        }
+    }
+
+    /**
+     * Delete the old shared database. Its rows are plaintext and are not
+     * copied into the per-user store.
+     */
+    _dropLegacyDatabase() {
+        if (!window.isSecureContext || !browser.indexedDB) {
+            return Promise.resolve();
+        }
+        return new Promise((resolve) => {
+            const request = browser.indexedDB.deleteDatabase(OfflinePlugin.LEGACY_DATABASE_NAME);
+            const done = () => resolve();
+            request.onsuccess = done;
+            request.onerror = done;
+            request.onblocked = done;
+        });
+    }
+
+    _sealId(table, key) {
+        return `${table}\n${key}`;
+    }
+
+    _nextSealToken(table, key) {
+        const id = this._sealId(table, key);
+        const token = (this._sealTokens.get(id) || 0) + 1;
+        this._sealTokens.set(id, token);
+        return token;
+    }
+
+    _invalidateSeal(table, key) {
+        this._nextSealToken(table, key);
+    }
+
+    _writeSealed(table, key, value) {
+        if (this._wiping) {
+            return Promise.resolve();
+        }
+        this._assertCanPersist();
+        const token = this._nextSealToken(table, key);
+        const id = this._sealId(table, key);
+        const job = this._crypto.encrypt(value).then(async (sealed) => {
+            // A remove or logout can land while encrypt is in flight. Writing
+            // afterwards would put the row back for the next sync.
+            if (this._wiping || this._sealTokens.get(id) !== token) {
+                return;
+            }
+            await this._idb.write(table, key, sealed);
+        });
+        this._pendingPersists = this._pendingPersists.then(() => job, () => job);
+        return job;
+    }
+
+    async _flushPersists() {
+        try {
+            await this._pendingPersists;
+        } catch {
+            // A rejected seal must not block logout or the next read.
+        }
+    }
+
+    /**
+     * Decrypt a sealed IndexedDB value. Returns undefined when the value is
+     * missing, plaintext, or not decryptable with this user's key.
+     */
+    async _open(raw) {
+        if (!this._crypto || !raw || typeof raw !== "object" || !raw.ciphertext || !raw.iv) {
+            return undefined;
+        }
+        try {
+            return await this._crypto.decrypt(raw);
+        } catch {
+            return undefined;
+        }
+    }
+
+    async _readSealed(table, key) {
+        await this._flushPersists();
+        if (!this._crypto) {
+            return undefined;
+        }
+        const raw = await this._idb.read(table, key);
+        if (raw === undefined || raw === null) {
+            return undefined;
+        }
+        const value = await this._open(raw);
+        if (value === undefined) {
+            await this._idb.delete(table, key);
+        }
+        return value;
+    }
+
+    async _loadSealedEntries(table) {
+        await this._flushPersists();
+        if (!this._crypto) {
+            return [];
+        }
+        const rows = (await this._idb.getAllEntries(table)) || [];
+        const opened = [];
+        for (const row of rows) {
+            const value = await this._open(row.value);
+            if (value === undefined) {
+                await this._idb.delete(table, row.key);
+                continue;
+            }
+            opened.push({ key: row.key, value });
+        }
+        return opened;
+    }
+
+    _parseSyncValue(value) {
+        if (!value || typeof value !== "object") {
+            return undefined;
+        }
         // Rows queued before extras was always stored have no extras key.
         value.extras ??= {};
         return value;
     }
 
+    async _loadSyncTable(table) {
+        const rows = await this._loadSealedEntries(table);
+        const entries = [];
+        for (const row of rows) {
+            const value = this._parseSyncValue(row.value);
+            if (!value) {
+                await this._idb.delete(table, row.key);
+                continue;
+            }
+            entries.push([row.key, { key: row.key, value }]);
+        }
+        return Object.fromEntries(entries);
+    }
+
     async _updateScheduledORMList() {
-        const table = await this._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME);
-        this._ormToSync.set(
-            Object.fromEntries(
-                table.map((v) => [v.key, { key: v.key, value: this._parseSyncValue(v.value) }])
-            )
-        );
+        this._ormToSync.set(await this._loadSyncTable(OfflinePlugin.ORM_SYNC_TABLE_NAME));
     }
 
     async _updateScheduledHTTPList() {
-        const table = await this._idb.getAllEntries(OfflinePlugin.HTTP_SYNC_TABLE_NAME);
-        this._httpToSync.set(
-            Object.fromEntries(
-                table.map((v) => [v.key, { key: v.key, value: this._parseSyncValue(v.value) }])
-            )
-        );
+        this._httpToSync.set(await this._loadSyncTable(OfflinePlugin.HTTP_SYNC_TABLE_NAME));
     }
 }
 

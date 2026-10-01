@@ -5,10 +5,13 @@ import {
     defineModels,
     fields,
     getService,
+    isSmall,
     mockOffline,
     models,
     mountWithCleanup,
     onRpc,
+    toggleActionMenu,
+    toggleMenuItem,
 } from "@web/../tests/web_test_helpers";
 import { expect, test, waitFor } from "@odoo/hoot";
 import { animationFrame } from "@odoo/hoot-mock";
@@ -189,6 +192,7 @@ test("[Offline] Won button schedules ORM when offline", async () => {
     expect(entries.some((e) => e.value.method === "action_set_won_rainbowman")).toBe(true);
 });
 
+test.tags("desktop");
 test("[Offline] scheduleORM for convert is queued", async () => {
     const setOffline = mockOffline();
     await mountWithCleanup(WebClient);
@@ -232,7 +236,14 @@ test("Make available offline uses the kanban group read and the form specificati
     await animationFrame();
     reads.length = 0;
 
-    await contains(".o_crm_offline_prefetch").click();
+    if (isSmall()) {
+        await contains(
+            ".o_control_panel_main_buttons button.o-control-panel-adaptive-dropdown"
+        ).click();
+        await contains(".dropdown-menu .o_crm_offline_prefetch").click();
+    } else {
+        await contains(".o_crm_offline_prefetch").click();
+    }
     await animationFrame();
 
     expect(reads.includes("web_read_group")).toBe(true);
@@ -242,4 +253,22 @@ test("Make available offline uses the kanban group read and the form specificati
         true
     );
     expect(reads.some((entry) => entry && entry.email_from)).toBe(false);
+});
+
+test("[Offline] Duplicate queues a copy when the connection drops", async () => {
+    const setOffline = mockOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1, { viewType: "form", props: { resId: 1 } });
+    await animationFrame();
+    await setOffline(true);
+    await animationFrame();
+
+    await toggleActionMenu();
+    await toggleMenuItem("Duplicate");
+    await animationFrame();
+
+    const offline = getService(OfflinePlugin);
+    expect(
+        Object.values(offline._ormToSync()).some((entry) => entry.value.method === "copy")
+    ).toBe(true);
 });

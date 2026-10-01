@@ -506,3 +506,44 @@ test("scheduledORM: inError mobile", async () => {
         "Cedric Lards Ennais",
     ]);
 });
+
+test("scheduled HTTP entries render, retry, and discard", async () => {
+    const setOffline = mockOffline();
+    onRpc("/web/webclient/version_info", () => new Response("", { status: 502 }), { pure: true });
+    await mountWithCleanup(WebClient);
+    await runAllTimers();
+
+    const offline = getService(OfflinePlugin);
+    offline.scheduleHTTP("/mail/message/post", { body: "hi" }, {
+        id: "note",
+        extras: {
+            timeStamp: 1,
+            displayName: "A note",
+            actionName: "Messages",
+            error: "failed",
+            displayNames: ["Lead"],
+        },
+    });
+    offline.scheduleHTTP("/mail/attachment/upload", { name: "a.txt" }, {
+        id: "file",
+        extras: { timeStamp: 2, displayName: "a.txt", actionName: "Messages" },
+    });
+    offline.scheduleHTTP("/web/dataset/call_button", { method: "other" }, {
+        id: "other",
+        extras: { timeStamp: 3, displayName: "Other" },
+    });
+    offline.syncingORM.set(true);
+    await animationFrame();
+    expect(".o_offline_systray [data-icon='spinner-border']").toHaveCount(1);
+    offline.syncingORM.set(false);
+    await setOffline(true);
+    await animationFrame();
+
+    await contains(".o_offline_systray").click();
+    expect(".o-dropdown--menu .o-dropdown-item").toHaveCount(3);
+    expect(".o-dropdown--menu").toHaveText(/A note/);
+    await contains(".o-dropdown--menu button[data-icon='refresh']").click();
+    await contains(".o-dropdown--menu button[data-icon='delete']").click();
+    await contains(".modal-dialog .modal-footer button.btn-primary").click();
+    expect(offline._httpToSync()["note"]).toBe(undefined);
+});
