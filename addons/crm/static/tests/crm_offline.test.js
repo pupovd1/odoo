@@ -211,6 +211,12 @@ test("[Offline] Lost button queues action_set_lost without opening the wizard", 
     await setOffline(true);
     await animationFrame();
 
+    // On a narrow screen only the first status button is shown. Lost is in More.
+    if (isSmall()) {
+        await contains(".o_statusbar_buttons button.dropdown-toggle-split").click();
+        await animationFrame();
+    }
+
     const lostButton = document.querySelector("button[name='%(crm.crm_lead_lost_action)d']");
     expect(lostButton).not.toBe(null);
     expect(lostButton.disabled).toBe(false);
