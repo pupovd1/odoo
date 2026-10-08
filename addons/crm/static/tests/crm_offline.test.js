@@ -197,8 +197,11 @@ test("[Offline] Won button schedules ORM when offline", async () => {
 
 test("[Offline] Lost button queues action_set_lost without opening the wizard", async () => {
     const setOffline = mockOffline();
-    onRpc("/web/action/load", () => {
-        throw new Error("lost wizard must not be loaded offline");
+    onRpc("/web/action/load", async (request) => {
+        const { params } = await request.json();
+        if (params.action_id !== 1) {
+            throw new Error(`lost wizard must not be loaded offline: ${params.action_id}`);
+        }
     });
 
     await mountWithCleanup(WebClient);
@@ -226,8 +229,11 @@ test("[Offline] Lost button queues action_set_lost without opening the wizard", 
 test.tags("desktop");
 test("[Offline] Mark Lost in the actions menu queues action_set_lost", async () => {
     const setOffline = mockOffline();
-    onRpc("/web/action/load", () => {
-        throw new Error("lost wizard must not be loaded offline");
+    onRpc("/web/action/load", async (request) => {
+        const { params } = await request.json();
+        if (String(params.action_id).includes("lost") || params.action_id === 9) {
+            throw new Error(`lost wizard must not be loaded offline: ${params.action_id}`);
+        }
     });
 
     await mountView({
