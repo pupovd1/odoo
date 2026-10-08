@@ -8,6 +8,7 @@ import {
     isSmall,
     mockOffline,
     models,
+    mountView,
     mountWithCleanup,
     onRpc,
     toggleActionMenu,
@@ -140,6 +141,8 @@ Lead._views = {
                     data-available-offline=""/>
                 <button name="action_convert_to_opportunity" string="Convert" type="object"
                     data-available-offline=""/>
+                <button name="%(crm.crm_lead_lost_action)d" string="Lost" type="action"
+                    data-available-offline="" context="{'offline_method': 'action_set_lost'}"/>
             </header>
             <sheet>
                 <field name="name"/>
@@ -190,6 +193,77 @@ test("[Offline] Won button schedules ORM when offline", async () => {
     const offline = getService(OfflinePlugin);
     const entries = Object.values(offline._ormToSync());
     expect(entries.some((e) => e.value.method === "action_set_won_rainbowman")).toBe(true);
+});
+
+test("[Offline] Lost button queues action_set_lost without opening the wizard", async () => {
+    const setOffline = mockOffline();
+    onRpc("/web/action/load", () => {
+        throw new Error("lost wizard must not be loaded offline");
+    });
+
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1, { viewType: "form", props: { resId: 1 } });
+    await animationFrame();
+
+    await setOffline(true);
+    await animationFrame();
+
+    const lostButton = document.querySelector("button[name='%(crm.crm_lead_lost_action)d']");
+    expect(lostButton).not.toBe(null);
+    expect(lostButton.disabled).toBe(false);
+    expect(lostButton.classList.contains("o_disabled_offline")).toBe(false);
+
+    await contains("button", { text: "Lost" }).click();
+    await animationFrame();
+
+    const entries = Object.values(getService(OfflinePlugin)._ormToSync());
+    expect(entries.some((entry) => entry.value.method === "action_set_lost")).toBe(true);
+    expect(entries.find((entry) => entry.value.method === "action_set_lost").value.args).toEqual([
+        [1],
+    ]);
+});
+
+test.tags("desktop");
+test("[Offline] Mark Lost in the actions menu queues action_set_lost", async () => {
+    const setOffline = mockOffline();
+    onRpc("/web/action/load", () => {
+        throw new Error("lost wizard must not be loaded offline");
+    });
+
+    await mountView({
+        type: "form",
+        resModel: "crm.lead",
+        resId: 1,
+        loadActionMenus: true,
+        actionMenus: {
+            action: [
+                {
+                    id: 9,
+                    name: "Mark Lost",
+                    res_model: "crm.lead.lost",
+                    type: "ir.actions.act_window",
+                },
+            ],
+        },
+        arch: `<form><field name="name"/></form>`,
+    });
+
+    await setOffline(true);
+    await animationFrame();
+    await toggleActionMenu();
+    const lostItem = [...document.querySelectorAll(".o-dropdown--menu .o_menu_item")].find((node) =>
+        node.textContent.includes("Mark Lost")
+    );
+    expect(Boolean(lostItem)).toBe(true);
+    expect(lostItem.classList.contains("pe-none")).toBe(false);
+    await toggleMenuItem("Mark Lost");
+    await animationFrame();
+
+    const entries = Object.values(getService(OfflinePlugin)._ormToSync());
+    expect(entries.some((entry) => entry.value.method === "action_set_lost")).toBe(true);
+    expect(entries.find((entry) => entry.value.method === "action_set_lost").value.args).toEqual([
+        [1],
+    ]);
 });
 
 test.tags("desktop");
