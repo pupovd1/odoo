@@ -17,6 +17,8 @@
                             data-available-offline=""
                             invisible="won_status != 'lost'"/>
                         <button name="%(crm.crm_lead_lost_action)d" string="Lost" type="action" data-hotkey="l"
+                            data-available-offline=""
+                            context="{'offline_method': 'action_set_lost'}"
                             invisible="won_status != 'pending' or not active"/>
                         <field name="stage_id" widget="rotting_statusbar_duration"
                             options="{'clickable': '1', 'fold_field': 'fold'}"
@@ -325,7 +327,8 @@
                       decoration-muted="won_status == 'lost'">
                     <header>
                         <button name="%(action_crm_send_mass_convert)d" type="action" string="Convert to Opportunities"/>
-                        <button name="%(crm.crm_lead_lost_action)d" type="action" string="Mark Lost"/>
+                        <button name="%(crm.crm_lead_lost_action)d" type="action" string="Mark Lost"
+                            data-available-offline="" context="{'offline_method': 'action_set_lost'}"/>
                     </header>
                     <field name="company_id" column_invisible="True"/>
                     <field name="user_company_ids" column_invisible="True"/>
@@ -711,7 +714,8 @@
                 <list string="Opportunities" sample="1" multi_edit="1" js_class="crm_list"
                     decoration-muted="won_status == 'lost'">
                     <header>
-                        <button name="%(crm.crm_lead_lost_action)d" type="action" string="Mark Lost" />
+                        <button name="%(crm.crm_lead_lost_action)d" type="action" string="Mark Lost"
+                            data-available-offline="" context="{'offline_method': 'action_set_lost'}"/>
                         <button name="%(crm.action_lead_mass_mail)d" type="action" string="Email" />
                     </header>
                     <field name="company_id" column_invisible="True"/>

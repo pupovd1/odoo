@@ -12,7 +12,7 @@
                 <t t-set="otherSlots" t-value="this.visibleSlotNames.slice(1)" />
                 <t t-if="firstSlot" t-call-slot="{{ firstSlot }}" />
                 <Dropdown t-if="otherSlots.length">
-                    <button class="btn o-dropdown-caret dropdown-toggle-split align-self-stretch" title="More"/>
+                    <button class="btn o-dropdown-caret dropdown-toggle-split align-self-stretch" title="More" data-available-offline=""/>
                     <t t-set-slot="content">
                         <t t-foreach="otherSlots" t-as="slot" t-key="slot">
                             <DropdownItem class="'o-dropdown-item-unstyled-button'">
