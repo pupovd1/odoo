@@ -21,6 +21,12 @@ LOG_DIR="$REPO_ROOT/logs"
 SERVER_LOG="$LOG_DIR/odoo.log"
 PID_FILE="$LOG_DIR/odoo.pid"
 mkdir -p "$LOG_DIR"
+# Keep logs/ out of git status (and out of check.sh's change set) without
+# touching .gitignore: list it in the clone-local exclude file.
+if _exclude="$(git rev-parse --git-path info/exclude 2>/dev/null)"; then
+    grep -qxF '/logs/' "$_exclude" 2>/dev/null \
+        || { mkdir -p "$(dirname "$_exclude")" && echo '/logs/' >>"$_exclude"; }
+fi
 
 ODOO=("$PY" "$REPO_ROOT/odoo-bin")
 

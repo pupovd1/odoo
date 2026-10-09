@@ -15,6 +15,8 @@ scripts/dev/test-js.sh mobile           # crm JS unit tests, mobile preset (375x
 scripts/dev/test-guard.sh               # fails if a .test.js file uses only( or debug(
 scripts/dev/rebuild-assets.sh           # regenerate JS/CSS bundles: after any front-end change, before re-testing
 scripts/dev/reset-db.sh                 # drop and recreate crm_offline (crm, mail, demo data)
+scripts/dev/check.sh scope              # acceptance checks on the changes since eval/base (no tests, < 1 s)
+scripts/dev/check.sh full               # scope, rebuild-assets.sh, the five test commands, summary table
 ```
 
 ## What runs
@@ -57,6 +59,27 @@ reports more than zero passed JS tests. Each script ends with the test counts,
 wall time and peak memory. Full output is in `logs/test-py.log`,
 `logs/test-js-<preset>.log` and `logs/test-guard.log`.
 
+## Acceptance checks: `check.sh`
+
+`scope` compares eval/base (its merge base with HEAD; `CHECK_BASE=<ref>` to
+change it) with the working tree: commits, staged, unstaged and untracked
+changes. Ignored files don't count. It prints PASS or FAIL per check, with the
+paths that fail, and exits non-zero if any check fails:
+
+1. Every changed path is under `addons/crm/` (acceptance check 2).
+2. `requirements.txt` and every `security/` path are unchanged (check 3).
+3. No new `indexedDB`, `new IndexedDB`, `navigator.locks` or `caches.open` under `addons/crm/` (check 4).
+4. No existing test file (in a `tests/` directory, `test_*.py`, `*.test.js`) changed,
+   except `addons/crm/tests/__init__.py` (check 11, file part).
+5. No `.test.js` file in the change set contains `only(` or `debug(` (check 13, static part).
+
+`full` runs `scope`, `rebuild-assets.sh`, `test-py.sh`, `test-py.sh TestCrmOffline`,
+`test-js.sh desktop`, `test-js.sh mobile` and `test-guard.sh`, then prints a table
+(command, result, test count, time; also saved to `logs/check-summary.txt`). It fails
+if any step fails or runs zero tests. Until the `TestCrmOffline` class exists, its
+row reads `not yet created` and `full` fails. It takes about 5 minutes and, through
+`test-py.sh`, recreates `crm_offline`.
+
 Measured on 4 vCPU / 16 GB (Ubuntu 24.04, Chromium 141); peak memory is odoo-bin plus Chrome:
 
 | Command | Wall time | Peak memory |
@@ -81,7 +104,7 @@ Measured on 4 vCPU / 16 GB (Ubuntu 24.04, Chromium 141); peak memory is odoo-bin
   change `crm_offline` wait for each other.
 - Server log: `logs/odoo.log`. Smoke screenshot: `logs/smoke-crm-pipeline.png`.
   `.venv/`, `.odoo-data/` (filestore) and `logs/` are not tracked by git
-  (`setup.sh` adds `/logs/` to `.git/info/exclude`).
+  (the scripts add `/logs/` to `.git/info/exclude`).
 - `requirements.txt` is unchanged. `setup.sh` also installs `websocket-client==1.7.0`
   and `phonenumbers==8.12.57` (the Ubuntu 24.04 versions), which it lacks.
 - Overrides: `ODOO_HTTP_PORT` (8069), `ODOO_TEST_HTTP_PORT` (8070), `ODOO_DB`

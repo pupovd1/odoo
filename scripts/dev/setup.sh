@@ -194,15 +194,7 @@ psql_q postgres "SELECT 1" >/dev/null 2>&1 || {
 }
 psql_q postgres "SELECT 1" >/dev/null || die "Cannot connect to PostgreSQL as $PGUSER@$PGHOST:$PGPORT."
 PG_SERVER="$(psql_q postgres "SHOW server_version")"
-
-# --- 5. local git ignores ----------------------------------------------------------
-
-# .venv/ and .odoo-data/ are already ignored (dotfiles); logs/ is not, and
-# should not be committed. Use the clone-local exclude file, not .gitignore.
-if exclude="$(git rev-parse --git-path info/exclude 2>/dev/null)"; then
-    mkdir -p "$(dirname "$exclude")"
-    grep -qxF '/logs/' "$exclude" 2>/dev/null || echo '/logs/' >>"$exclude"
-fi
+# (.venv/ and .odoo-data/ are ignored as dotfiles; lib.sh keeps logs/ out of git.)
 
 printf '\n%sSetup complete%s\n' "$_c_green" "$_c_off"
 printf '  Python:     %s (%s, %s packages)\n' "${VENV_DIR#"$REPO_ROOT"/}" "$("$PY" -V)" "$("$PY" -m pip list --disable-pip-version-check 2>/dev/null | tail -n +3 | wc -l)"
