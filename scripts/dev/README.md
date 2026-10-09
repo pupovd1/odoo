@@ -1,0 +1,76 @@
+# Dev environment: Odoo 20.0 + crm
+
+Run everything from the repository root. Database `crm_offline`, server
+http://localhost:8069, login `admin` / password `admin`.
+
+```sh
+scripts/dev/setup.sh                    # system + Python deps, PostgreSQL, headless Chromium (idempotent)
+scripts/dev/start.sh                    # serve http://localhost:8069 (creates crm_offline if missing); Ctrl-C stops
+scripts/dev/start.sh --background       # same, detached; stop with scripts/dev/stop.sh
+scripts/dev/smoke.sh                    # headless: log in as admin, open the CRM pipeline, check secure context
+scripts/dev/test-py.sh                  # all crm tests (recreates crm_offline)
+scripts/dev/test-py.sh TestCrmOffline   # one test class (or Class.test_method)
+scripts/dev/test-js.sh desktop          # crm JS unit tests, desktop preset
+scripts/dev/test-js.sh mobile           # crm JS unit tests, mobile preset (375x667, touch)
+scripts/dev/test-guard.sh               # fails if a .test.js file uses only( or debug(
+scripts/dev/rebuild-assets.sh           # regenerate JS/CSS bundles: after any front-end change, before re-testing
+scripts/dev/reset-db.sh                 # drop and recreate crm_offline (crm, mail, demo data)
+```
+
+## What runs
+
+The scripts print every command. All `odoo-bin` calls run with `.venv/bin/python`
+and `-c scripts/dev/odoo.conf` (database role, addons path, data dir, listen on
+127.0.0.1). Test runs add `--http-port=8070` so they never clash with a server on 8069.
+
+| Script | `odoo-bin` arguments |
+|---|---|
+| `start.sh` | `-d crm_offline --http-port=8069`, after `-d crm_offline -i crm,mail --with-demo --stop-after-init` if the database is missing |
+| `test-py.sh` | `db drop crm_offline`, then `-d crm_offline -i crm --test-enable --test-tags /crm --stop-after-init --log-level=test --with-demo` |
+| `test-py.sh <Class>` | `-d crm_offline -u crm --test-enable --test-tags /crm:<Class> --stop-after-init --log-level=test` |
+| `test-js.sh desktop` | `-d crm_offline -u crm --stop-after-init`, then `-d crm_offline --test-enable --test-tags /crm:WebSuite.test_unit_desktop --stop-after-init --log-level=test` |
+| `test-js.sh mobile` | the same with `/crm:MobileWebSuite.test_unit_mobile` |
+| `test-guard.sh` | `-d crm_offline -u crm --stop-after-init`, then `-d crm_offline --test-enable --test-tags /web:HootSuite.test_check_suite --stop-after-init --log-level=test` |
+| `reset-db.sh` | `db drop crm_offline`, then `-d crm_offline -i crm,mail --with-demo --stop-after-init` |
+| `rebuild-assets.sh` | `shell -d crm_offline`: delete the `/web/assets/` attachments, clear the `assets` cache (a running server is notified), regenerate the bundles |
+
+Why these differ from the one-line commands they replace (each of which exits 0
+having run **zero** tests):
+
+- `-i crm` on a database where crm is already installed installs nothing, so no
+  test runs. `test-py.sh` therefore drops `crm_offline` and lets `-i crm` recreate it.
+- With `-u crm`, `odoo-bin` only collects tests of the modules it updated.
+  `WebSuite`, `MobileWebSuite` and `HootSuite` are defined in `web`, so
+  `-u crm --test-tags /web:...` finds nothing. The JS and guard scripts update crm
+  first, then run the suite without `-u`.
+- `WebSuite` and `MobileWebSuite` are cross-module tests: the module in the tag
+  selects whose JS tests they run. `/crm:` runs crm's; `/web:` would run web's
+  own suite (thousands of tests). `/crm` alone (`test-py.sh`) also runs both, for crm.
+- Demo data is opt-in in 20.0 (`--with-demo`).
+
+## Pass or fail
+
+A test script passes only if `odoo-bin` exits 0, at least one test ran, no test
+was skipped (without Chrome, Odoo skips browser tests and still exits 0),
+nothing was logged at ERROR or CRITICAL level, and, for `test-js.sh`, hoot
+reports more than zero passed JS tests. Each script ends with the test counts,
+wall time and peak memory. Full output is in `logs/test-py.log`,
+`logs/test-js-<preset>.log` and `logs/test-guard.log`.
+
+## Notes
+
+- **Secure context.** Odoo turns its offline features off when
+  `window.isSecureContext` is false. The server listens on 127.0.0.1 and is opened
+  as http://localhost:8069, which browsers treat as secure. From another machine,
+  tunnel (`ssh -L 8069:localhost:8069 <host>`) and still open
+  http://localhost:8069; plain `http://<host>:8069` is not a secure context.
+- The test scripts and `reset-db.sh` stop a dev server started by `start.sh`,
+  since they change the database it serves. Restart it afterwards. Scripts that
+  change `crm_offline` wait for each other.
+- Server log: `logs/odoo.log`. Smoke screenshot: `logs/smoke-crm-pipeline.png`.
+  `.venv/`, `.odoo-data/` (filestore) and `logs/` are not tracked by git
+  (`setup.sh` adds `/logs/` to `.git/info/exclude`).
+- `requirements.txt` is unchanged. `setup.sh` also installs `websocket-client==1.7.0`
+  and `phonenumbers==8.12.57` (the Ubuntu 24.04 versions), which it lacks.
+- Overrides: `ODOO_HTTP_PORT` (8069), `ODOO_TEST_HTTP_PORT` (8070), `ODOO_DB`
+  (`crm_offline`), `ODOO_BROWSER_BIN`, and `PYTHON` for `setup.sh` (default `python3.12`).
