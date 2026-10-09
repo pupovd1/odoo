@@ -57,6 +57,18 @@ reports more than zero passed JS tests. Each script ends with the test counts,
 wall time and peak memory. Full output is in `logs/test-py.log`,
 `logs/test-js-<preset>.log` and `logs/test-guard.log`.
 
+Measured on 4 vCPU / 16 GB (Ubuntu 24.04, Chromium 141); peak memory is odoo-bin plus Chrome:
+
+| Command | Wall time | Peak memory |
+|---|---|---|
+| `setup.sh` (all present / new `.venv`) | 3 s / 28 s | |
+| `start.sh` (database present / created) | 2 s / 48 s | server ~270 MiB |
+| `test-py.sh` (139 tests) | 3 min 06 s | 1.3 GiB |
+| `test-py.sh TestLeadConvert` (18 tests) | 10 s | 160 MiB |
+| `test-js.sh desktop` / `mobile` (26 / 13 JS tests) | 17 s / 17 s | 1.2 / 1.1 GiB |
+| `test-guard.sh` | 11 s | 150 MiB |
+| `rebuild-assets.sh` / `reset-db.sh` / `smoke.sh` | 16 s / 42 s / 11 s | |
+
 ## Notes
 
 - **Secure context.** Odoo turns its offline features off when
