@@ -1,0 +1,14 @@
+{
+  "name": "odoo-dev-scripts",
+  "private": true,
+  "description": "Browser tooling for scripts/dev (offline QA with Playwright). Not part of Odoo.",
+  "scripts": {
+    "offline-smoke": "node offline-smoke.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "playwright": "1.56.1"
+  }
+}

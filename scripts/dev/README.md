@@ -17,6 +17,8 @@ scripts/dev/rebuild-assets.sh           # regenerate JS/CSS bundles: after any f
 scripts/dev/reset-db.sh                 # drop and recreate crm_offline (crm, mail, demo data)
 scripts/dev/check.sh scope              # acceptance checks on the changes since eval/base (no tests, < 1 s)
 scripts/dev/check.sh full               # scope, rebuild-assets.sh, the five test commands, summary table
+npm ci --prefix scripts/dev             # once per container: Playwright for the browser checks below
+node scripts/dev/offline-smoke.mjs      # with the server up: mobile browser goes offline, reloads from cache
 ```
 
 ## What runs
@@ -91,6 +93,16 @@ Measured on 4 vCPU / 16 GB (Ubuntu 24.04, Chromium 141); peak memory is odoo-bin
 | `test-js.sh desktop` / `mobile` (26 / 13 JS tests) | 17 s / 17 s | 1.2 / 1.1 GiB |
 | `test-guard.sh` | 11 s | 150 MiB |
 | `rebuild-assets.sh` / `reset-db.sh` / `smoke.sh` | 16 s / 42 s / 11 s | |
+
+## Offline browser checks
+
+`offline-smoke.mjs` runs headless Chromium (Playwright 1.56.1, pinned in `package.json`, built
+for the preinstalled Chromium 141) in a 375x667 touch context on http://localhost:8069. It logs
+in, opens the CRM pipeline, goes offline, reloads offline and checks that the pipeline renders
+from cache without a page request reaching the server, then goes back online. It exits 1 on any
+failed check; screenshot and console log go to `.eval/state/smoke/`. Its helpers are the basis
+of the `odoo-offline-qa` skill (`.claude/skills/odoo-offline-qa/SKILL.md`), which covers driving
+flows offline and checking the server after reconnect.
 
 ## Notes
 
