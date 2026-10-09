@@ -114,7 +114,7 @@ run_scope() {
             now="$(count_matches "${regexes[$i]}" "$path")"
             was="$(count_matches "${regexes[$i]}" "$before")"
             if (( now > was )); then
-                fails+=("$path: $((now - was)) new ${names[$i]}")
+                fails+=("$path: +$((now - was)) ${names[$i]}")
                 while IFS= read -r line; do fails+=("  $line"); done \
                     < <(grep -nE -- "${regexes[$i]}" "$path" | head -n 3 | cut -c1-150)
             fi
