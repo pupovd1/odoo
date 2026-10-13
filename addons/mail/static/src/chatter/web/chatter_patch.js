@@ -604,12 +604,21 @@ const chatterPatch = {
         }
     },
 
-    onPostCallback() {
+    onPostCallback({ immediate = false, epoch } = {}) {
+        if (immediate) {
+            // Hide the composer before the optimistic message is rendered.
+            this._postEpoch = (this._postEpoch || 0) + 1;
+            this.state.composerType = false;
+            return this._postEpoch;
+        }
         const offline = this.store.env.services.offline?.isOffline?.();
         if (this.hasParentReloadOnMessagePosted && !offline) {
             this.reloadParentView();
         }
-        this.toggleComposer();
+        // A composer opened after this send started belongs to the next message.
+        if (epoch === undefined || epoch === this._postEpoch) {
+            this.state.composerType = false;
+        }
         if (offline) {
             // A reload would web-read a server that cannot be reached and can
             // drop the note that was just saved locally.
@@ -726,6 +735,10 @@ const chatterPatch = {
     },
 
     async toggleComposer(mode = false, { force = false } = {}) {
+        if (mode) {
+            // Opening a composer invalidates a close scheduled by an in-flight send.
+            this._postEpoch = (this._postEpoch || 0) + 1;
+        }
         this.closeSearch();
         const toggle = async () => {
             if (!force && this.state.composerType === mode) {
