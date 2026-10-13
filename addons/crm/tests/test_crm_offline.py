@@ -1,10 +1,23 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+from contextlib import contextmanager
+from unittest.mock import patch
+
 from lxml import etree
 
 from odoo.tests import Form, HttpCase, tagged
+from odoo.tests.common import ChromeBrowser
 
+from odoo.addons.crm.controllers.webmanifest import WebManifest as CrmWebManifest
 from odoo.addons.crm.tests.common import TestCrmCommon
+from odoo.addons.mail.tests.common import mail_new_test_user
+from odoo.addons.web.controllers.webmanifest import WebManifest
+
+# what crm_offline_tour logs to switch the test browser's network off / on
+TOUR_NETWORK_SIGNALS = {
+    'crm_offline_tour: network off': True,
+    'crm_offline_tour: network on': False,
+}
 
 
 @tagged('post_install', '-at_install')
@@ -300,3 +313,142 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
         )
         campaign_kanban = self.env.ref('crm.utm_campaign_view_kanban').arch
         self.assertIn('data-crm-offline-disable="1"', campaign_kanban)
+
+    def _manifest(self):
+        response = self.url_open('/web/manifest.webmanifest')
+        self.assertEqual(response.status_code, 200)
+        return response.json()
+
+    def test_webmanifest_crm_shortcuts(self):
+        """ The manifest's shortcuts are the parent's (the CRM app once), then
+        My Pipeline and New Lead in the parent's shape with crm's own icon; the
+        rest of the manifest is the parent's (web's icons and colors, the share
+        target kept). """
+        self.authenticate(self.user_sales_salesman.login, self.user_sales_salesman.login)
+        with patch.object(CrmWebManifest, '_get_shortcuts', WebManifest._get_shortcuts):
+            parent = self._manifest()
+        manifest = self._manifest()
+        shortcuts = manifest['shortcuts']
+        self.assertEqual(shortcuts[:-2], parent['shortcuts'])
+        self.assertEqual({**manifest, 'shortcuts': None}, {**parent, 'shortcuts': None})
+        crm_app_url = '/odoo?menu_id=%s' % self.env.ref('crm.crm_menu_root').id
+        self.assertEqual([shortcut['url'] for shortcut in shortcuts].count(crm_app_url), 1)
+
+        pipeline_menu = self.env.ref('crm.menu_crm_opportunities')
+        pipeline_action = self.env.ref('crm.crm_lead_action_pipeline')
+        crm_icons = [{'sizes': '100x100', 'src': '/crm/static/description/icon.png', 'type': 'image/png'}]
+        self.assertEqual(shortcuts[-2:], [{
+            'name': 'My Pipeline',
+            'url': '/odoo?menu_id=%s' % pipeline_menu.id,
+            'description': 'Your opportunities, stage by stage',
+            'icons': crm_icons,
+        }, {
+            'name': 'New Lead',
+            'url': '/odoo?menu_id=%s&action=%s&view_type=form' % (pipeline_menu.id, pipeline_action.id),
+            'description': 'Create a lead in your pipeline',
+            'icons': crm_icons,
+        }])
+        for shortcut in shortcuts[-2:]:
+            self.assertEqual(shortcut.keys(), parent['shortcuts'][0].keys())
+        icon = self.url_open(crm_icons[0]['src'])
+        self.assertEqual(icon.status_code, 200)
+        self.assertEqual(icon.headers['Content-Type'], 'image/png')
+
+        self.assertEqual(manifest['icons'], [
+            {'src': '/web/static/img/odoo-icon-192x192.png', 'sizes': '192x192', 'type': 'image/png'},
+            {'src': '/web/static/img/odoo-icon-512x512.png', 'sizes': '512x512', 'type': 'image/png'},
+        ])
+        self.assertEqual((manifest['background_color'], manifest['theme_color']), ('#714B67', '#714B67'))
+        self.assertEqual(manifest['share_target']['action'], '/odoo?share_target=trigger')
+
+    def test_webmanifest_no_crm_shortcuts_without_crm_access(self):
+        """ No CRM shortcut for anonymous visitors (no shortcut at all, as in web)
+        nor for internal users the CRM app isn't listed for. """
+        self.assertEqual(self._manifest()['shortcuts'], [])
+
+        # an internal user with apps (Discuss) but not CRM
+        user = mail_new_test_user(
+            self.env, login='user_without_crm', groups='base.group_user,base.group_user_regular',
+        )
+        self.authenticate(user.login, user.login)
+        shortcuts = self._manifest()['shortcuts']
+        self.assertTrue(shortcuts, "the parent's shortcuts (Discuss) are kept")
+        crm_menus = self.env.ref('crm.crm_menu_root') + self.env.ref('crm.menu_crm_opportunities')
+        for shortcut in shortcuts:
+            self.assertNotIn(shortcut['name'], ('CRM', 'My Pipeline', 'New Lead'))
+            self.assertFalse(any('menu_id=%s' % menu.id in shortcut['url'] for menu in crm_menus))
+
+    @contextmanager
+    def _tour_network_switch(self):
+        """ Lets crm_offline_tour switch the test browser's network off and on:
+        when a step logs one of TOUR_NETWORK_SIGNALS, the browser gets the
+        DevTools offline network emulation (as DevTools' "Offline": every page
+        request fails, navigator.onLine turns false and 'offline' / 'online'
+        events fire). """
+        handle_console = ChromeBrowser._handle_console
+
+        def _handle_console(browser, **params):
+            handle_console(browser, **params)
+            message = (params.get('args') or [{}])[0].get('value')
+            if (offline := TOUR_NETWORK_SIGNALS.get(message)) is not None:
+                # the emulation applies once the network domain is enabled
+                browser._websocket_send('Network.enable')
+                browser._websocket_send('Network.emulateNetworkConditions', params={
+                    'offline': offline,
+                    'latency': 0,
+                    'downloadThroughput': -1,
+                    'uploadThroughput': -1,
+                })
+
+        with patch.object(ChromeBrowser, '_handle_console', _handle_console):
+            yield
+
+    def test_crm_offline_tour(self):
+        """ KICKOFF's browser tour, at the mobile preset's size with touch: the
+        pipeline and a lead visited online; with the network off, an edit of that
+        lead, a mobile quick create, an activity scheduled and Won, all queued;
+        back online, every change reaches the server through the replay. """
+        lead = self.env['crm.lead'].create({
+            'name': 'Offline tour opportunity',
+            'type': 'opportunity',
+            'user_id': self.user_admin.id,
+            'expected_revenue': 1000,
+        })
+        stage = lead.stage_id
+        self.assertFalse(stage.is_won)
+
+        self.browser_size = '375x667'
+        self.touch_enabled = True
+        with self._tour_network_switch():
+            self.start_tour('/odoo/crm', 'crm_offline_tour', login='admin')
+
+        # the edit, then Won
+        self.assertRecordValues(lead, [{
+            'expected_revenue': 2500,
+            'won_status': 'won',
+            'probability': 100,
+            'active': True,
+        }])
+        self.assertTrue(lead.stage_id.is_won)
+        # the quick create, in the stage it was created in
+        created = self.env['crm.lead'].search([('name', '=', 'Lead created offline')])
+        self.assertRecordValues(created, [{
+            'contact_name': 'Alex Rivera',
+            'phone': '+32 470 12 34 56',
+            'email_from': 'alex.rivera@example.com',
+            'expected_revenue': 4200,
+            'stage_id': stage.id,
+            'type': 'opportunity',
+            'user_id': self.user_admin.id,
+        }])
+        # the activity, linked to the lead
+        activity = self.env['mail.activity'].search([
+            ('res_model', '=', 'crm.lead'),
+            ('res_id', '=', lead.id),
+            ('summary', '=', 'Call back about the offer'),
+        ])
+        self.assertRecordValues(activity, [{
+            'activity_type_id': self.env.ref('mail.mail_activity_data_call').id,
+            'user_id': self.user_admin.id,
+        }])
+        self.assertTrue(activity.date_deadline)

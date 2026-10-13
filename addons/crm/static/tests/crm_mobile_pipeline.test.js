@@ -546,3 +546,26 @@ test("[Offline] [Mobile] after the pipeline reloads offline, a stage never loade
     expect(".o_crm_mobile_load_more").toHaveCount(0);
     expect(".o_crm_mobile_stage_empty").toHaveCount(0);
 });
+
+test.tags("mobile");
+test("[Offline] [Mobile] Load more reads the rest of a long stage online; offline it is disabled", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/web_search_read"]);
+    await openPipeline({
+        kanban: pipelineArch.replace('mobile_pipeline="1"', 'mobile_pipeline="1" limit="4"'),
+        before: () => addLeads(3),
+    });
+    // 5 leads in New, read 4 at a time
+    expect(".o_crm_mobile_stage_count").toHaveText("5");
+    expect(".o_crm_mobile_card").toHaveCount(4);
+    expect(".o_crm_mobile_load_more").toHaveText("Load more (1)");
+
+    await setOffline(true);
+    expect(".o_crm_mobile_load_more").not.toBeEnabled();
+    await setOffline(false);
+    expect(".o_crm_mobile_load_more").toBeEnabled();
+
+    await contains(".o_crm_mobile_load_more").click();
+    expect.verifySteps(["crm.lead/web_search_read"]);
+    expect(".o_crm_mobile_card").toHaveCount(5);
+    expect(".o_crm_mobile_load_more").toHaveCount(0);
+});

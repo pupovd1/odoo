@@ -100,7 +100,7 @@ test file and test name.
 | B15 | addons/crm/views/crm_lead_views.xml:228 | `name="phone_action_blacklist_remove"` | DISABLE | framework (`<button>`) | Opens the phone.blacklist.remove wizard. | JS33 |
 | B16 | addons/crm/views/crm_lead_views.xml:245 | `<field name="priority" widget="priority" nolabel="1"` (also :246, kanban cards :373, :546) | QUEUE | framework (opted-in stars, web_save) | Write on crm.lead, client-resolvable; queued. | JS34, JS63 |
 | B17 | addons/crm/views/crm_lead_views.xml:248 | `<field name="tag_ids" widget="many2many_tags"` (pick existing tags) | QUEUE | framework (web_save) | Write on crm.lead (many2many commands with known ids); creating a tag is not offered offline. | JS34 |
-| B18 | addons/crm/views/crm_lead_views.xml:248 | `'on_tag_click': 'edit_color'` (tag color) | DISABLE | framework (ColorList `<button>`) | Writes crm.tag, outside the queueable models. | rule shown by JS33 (framework: every `<button>` without the attribute) |
+| B18 | addons/crm/views/crm_lead_views.xml:248 | `'on_tag_click': 'edit_color'` (tag color) | DISABLE | framework (ColorList `<button>`) | Writes crm.tag, outside the queueable models. | JS78; rule shown by JS33 (framework: every `<button>` without the attribute) |
 | B19 | addons/crm/views/crm_lead_views.xml:252 | `<field name="lead_properties" nolabel="1"` | DISABLE | framework (properties read-only offline) | Property values and definitions (definitions are written on crm.team) can't be edited offline. | not exercised by a crm test (framework: properties read-only offline) |
 | B20 | addons/crm/views/crm_lead_views.xml:257 | `<field name="description" placeholder=` | QUEUE | framework (web_save) | Write on crm.lead (html); live collaboration is unavailable offline. | JS34 |
 | B21 | addons/crm/views/crm_lead_views.xml:304 | `<chatter reload_on_post="True"/>` | DISABLE | crm (M2) | Messages, notes, followers, attachments and activity scheduling go through mail routes, uploads and wizards; KICKOFF defect 8: the chatter is read-only offline, with no uncaught error. | JS10 |
@@ -395,3 +395,4 @@ under; "server" for Python).
 | PY09 | tests/test_crm_offline.py | TestCrmOffline.test_crm_offline_tour | server |
 | PY13 | tests/test_crm_offline.py | TestCrmOffline.test_mobile_pipeline_wiring | server |
 | PY14 | tests/test_crm_offline.py | TestCrmOffline.test_offline_wiring_of_the_lead_form | server |
+| JS78 | static/tests/crm_mobile_pipeline.test.js | [Offline] [Mobile] Load more reads the rest of a long stage online; offline it is disabled | mobile |
