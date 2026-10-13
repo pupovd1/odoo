@@ -72,6 +72,9 @@ export class Composer extends Record {
         this.attachments.length = 0;
         this.replyToMessage = undefined;
         this.restoredFromFullComposer = false;
+        // A cleared draft is a new message. The server adds the signature
+        // unless this one already went through the full composer.
+        this.emailAddSignature = true;
         if (this.updateFrom === "html") {
             this.composerHtml = markup("<div class='o-paragraph'><br></div>");
         } else {
