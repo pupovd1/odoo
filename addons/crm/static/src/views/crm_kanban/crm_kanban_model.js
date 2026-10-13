@@ -5,6 +5,13 @@ export class CrmKanbanModel extends RelationalModel {
     setup(params, { effect }) {
         super.setup(...arguments);
         this.effect = effect;
+        // the stage the small-screen pipeline shows (CrmMobilePipeline), kept
+        // when the user comes back to the pipeline (e.g. from a lead)
+        this.mobileStage = params.state?.mobileStage;
+    }
+
+    exportState() {
+        return { ...super.exportState(), mobileStage: this.mobileStage };
     }
 }
 

@@ -2,7 +2,6 @@ import { Component, onWillStart, proxy, status, useOnChange, useProps } from "@o
 import { getQueuedResIds, useCrmOffline } from "@crm/mobile/offline_hooks";
 import { serializeDate, today } from "@web/core/l10n/dates";
 import { _t } from "@web/core/l10n/translation";
-import { ConnectionLostError } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
 import { user } from "@web/core/user";
 import { useService } from "@web/core/utils/hooks";
@@ -48,6 +47,19 @@ export class CrmOfflineActivities extends Component {
             () => this.load(),
             { initialRun: false }
         );
+        // once the queue has replayed this panel's pending calls, read the result
+        useOnChange(
+            () => [this.crmOffline.isSyncing()],
+            (isSyncing) => {
+                if (isSyncing) {
+                    this.hadPendingCalls = this.hasPendingCalls;
+                } else if (this.hadPendingCalls) {
+                    this.hadPendingCalls = false;
+                    this.load();
+                }
+            },
+            { initialRun: false }
+        );
     }
 
     get record() {
@@ -73,6 +85,10 @@ export class CrmOfflineActivities extends Component {
 
     get canSchedule() {
         return Boolean(this.selectedType && this.state.deadline);
+    }
+
+    get hasPendingCalls() {
+        return Boolean(this.pendingDoneIds.size || this.pendingActivities.length || this.pendingCalls.length);
     }
 
     /** Ids of the cached activities marked done offline. */
@@ -124,13 +140,9 @@ export class CrmOfflineActivities extends Component {
         // in memory is used as is (no doomed request)
         const update = this.crmOffline.isOffline() ? "once" : "always";
         const disk = this.orm.cache({ type: "disk", update });
-        const read = (model, domain, fields) =>
-            disk.searchRead(model, domain, fields).catch((error) => {
-                if (error instanceof ConnectionLostError) {
-                    return null; // offline and never read online
-                }
-                throw error;
-            });
+        // offline and never read online: nothing (a connection error); a failing
+        // read never breaks the form either: the panel is a side prefetch
+        const read = (model, domain, fields) => disk.searchRead(model, domain, fields).catch(() => null);
         const [activities, activityTypes] = await Promise.all([
             read("mail.activity", [["res_model", "=", "crm.lead"], ["res_id", "=", resId]], ACTIVITY_FIELDS),
             read(

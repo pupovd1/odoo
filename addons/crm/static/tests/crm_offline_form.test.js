@@ -355,10 +355,9 @@ test("[Offline] lead form buttons that need the server are disabled offline, ena
 const wonForm = `
     <form js_class="crm_form">
         <header>
-            <button name="action_set_won_rainbowman" string="Won" type="object" data-available-offline="1"
-                invisible="won_status == 'won' or type == 'lead' or not active or not id"/>
             <button name="action_set_won_rainbowman" string="Won" type="object"
-                invisible="won_status == 'won' or type == 'lead' or not active or id"/>
+                data-available-offline="1" data-crm-offline-needs-id="1"
+                invisible="won_status == 'won' or type == 'lead' or not active"/>
             <button name="action_restore" string="Restore" type="object" data-available-offline="1"
                 invisible="won_status != 'lost'"/>
             <field name="stage_id" widget="crm_statusbar" options="{'clickable': '1'}"/>
@@ -417,15 +416,28 @@ test("[Online] mark won still calls the server button and shows the rainbowman",
 test("[Offline] a lead created offline (no id yet) can't be marked won offline", async () => {
     const setOffline = mockCrmOffline(["crm.lead/action_set_won", "crm.lead/action_set_won_rainbowman"]);
     await mountView({ type: "form", resModel: "crm.lead", arch: wonForm });
+    // online, a new lead's Won button is usable (it saves, then marks won)
+    expect("button[name=action_set_won_rainbowman]").toBeEnabled();
     await setOffline(true);
     await contains(".o_field_widget[name=name] input").edit("Created offline");
-    // the Won button of a record without id carries no offline attribute: disabled
+    // a lead without id can't be marked won offline (no id remapping): disabled
     expect("button[name=action_set_won_rainbowman]").toHaveCount(1);
     expect("button[name=action_set_won_rainbowman]").not.toBeEnabled();
     await contains(".o_form_button_save").click();
     expect("button[name=action_set_won_rainbowman]").not.toBeEnabled();
+    // the framework's re-enabling of offline-available buttons doesn't undo it
+    await animationFrame();
+    expect("button[name=action_set_won_rainbowman]").not.toBeEnabled();
+    // a programmatic click does nothing either
+    queryFirst("button[name=action_set_won_rainbowman]").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await animationFrame();
     expect.verifySteps([]);
     expect(queuedMethods()).toEqual(["crm.lead.web_save"]);
+
+    // online again: enabled
+    await setOffline(false);
+    await expect.waitForSteps([]);
+    expect("button[name=action_set_won_rainbowman]").toBeEnabled();
 });
 
 test("[Offline] restore a lost lead: action_restore queued, shown as not lost at once", async () => {
@@ -447,6 +459,50 @@ test("[Offline] restore a lost lead: action_restore queued, shown as not lost at
     await expect.waitForSteps(["crm.lead/action_restore"]);
     expect(queuedCalls()).toEqual([]);
     expect(MockServer.env["crm.lead"].browse(5)[0].active).toBe(true);
+});
+
+test("[Offline] a lead marked won or restored offline still shows it when opened again offline", async () => {
+    // (without the stage bar, whose stages the framework also refreshes in the background)
+    CrmLead._views = { form: wonForm.replace(/<field name="stage_id"[^>]*\/>/, ""), search: `<search/>` };
+    defineActions(
+        [3, 5].map((resId) => ({
+            id: 10 + resId,
+            name: "Lead",
+            res_model: "crm.lead",
+            res_id: resId,
+            views: [[false, "form"]],
+            search_view_id: [false, "search"],
+        }))
+    );
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    // both leads visited online: available offline
+    await getService("action").doAction(15);
+    await getService("action").doAction(13);
+    await runAllTimers();
+
+    await setOffline(true);
+    await contains("button[name=action_set_won_rainbowman]").click();
+    expect(".ribbon:contains(Won)").toHaveCount(1);
+    await getService("action").doAction(15);
+    await contains("button[name=action_restore]").click();
+    expect(".ribbon:contains(Lost)").toHaveCount(0);
+
+    // opened again offline: the cached data predates the queued calls, which still show
+    await getService("action").doAction(13);
+    expect(".ribbon:contains(Won)").toHaveCount(1);
+    expect(".o_field_widget[name=probability] input").toHaveValue("100.00");
+    expect("button[name=action_set_won_rainbowman]").toHaveCount(0);
+    await getService("action").doAction(15);
+    expect(".ribbon:contains(Lost)").toHaveCount(0);
+    expect("button[name=action_restore]").toHaveCount(0);
+    expect(".o_field_widget[name=probability] input").toHaveValue("30.00");
+    // nothing queued twice; the form isn't dirty
+    expect(queuedMethods()).toEqual(["crm.lead.action_set_won", "crm.lead.action_restore"]);
+    expect(".o_form_status_indicator_buttons:not(.invisible)").toHaveCount(0);
+    // (each lead opened offline is still refreshed from the network in the background)
+    const refresh = /Connection to "\/web\/dataset\/call_kw\/crm\.lead\/web_read"/;
+    await expect.waitForErrors([refresh, refresh, refresh]);
 });
 
 test("[Offline] a stage move from the stage bar is saved offline (queued web_save)", async () => {

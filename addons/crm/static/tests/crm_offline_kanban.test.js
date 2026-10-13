@@ -43,6 +43,7 @@ const pipelineArch = `
             </t>
             <t t-name="card">
                 <field name="name"/>
+                <field name="priority" widget="priority"/>
                 <field name="is_rotting" invisible="1"/>
             </t>
         </templates>
@@ -53,6 +54,18 @@ class Lead extends CrmLead {
         kanban: pipelineArch,
         search: `<search><field name="name"/></search>`,
         form: `<form js_class="crm_form"><field name="name"/></form>`,
+        "kanban,2": `
+            <kanban js_class="forecast_kanban" on_create="quick_create" quick_create_view="crm.quick_create_opportunity_form">
+                <field name="date_deadline"/>
+                <templates>
+                    <t t-name="card"><field name="name"/></t>
+                </templates>
+            </kanban>`,
+        "search,2": `
+            <search>
+                <filter name="forecast" string="Forecast" context="{'forecast_filter':1}"/>
+                <filter name="groupby_date_deadline" context="{'group_by':'date_deadline'}"/>
+            </search>`,
         "form,crm.quick_create_opportunity_form": `
             <form>
                 <field name="partner_id"/>
@@ -67,6 +80,19 @@ class Lead extends CrmLead {
 defineModels([CrmStage, CrmTeam, CrmTag, Lead]);
 defineMailModels();
 defineActions([
+    {
+        id: 2,
+        name: "Forecast",
+        res_model: "crm.lead",
+        type: "ir.actions.act_window",
+        views: [[2, "kanban"]],
+        search_view_id: [2, "search"],
+        context: {
+            search_default_forecast: true,
+            search_default_groupby_date_deadline: true,
+            forecast_field: "date_deadline",
+        },
+    },
     {
         id: 1,
         name: "Pipeline",
@@ -342,5 +368,62 @@ test("[Offline] a lead quick-created offline is queued in its column's stage and
         ["stage_id", "expected_revenue"]
     );
     expect(created).toEqual([{ id: 6, stage_id: [1, "New"], expected_revenue: 3000 }]);
+});
+
+test("[Offline] a lead's priority set from its pipeline card is queued and replayed", async () => {
+    stepServerSaves();
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    await runAllTimers();
+
+    await setOffline(true);
+    // the stars are available offline: the card saves the priority at once (queued)
+    const star = ".o_kanban_record:contains(Office chairs) .o_priority_star:eq(0)";
+    expect(star).toBeEnabled();
+    await contains(star).click();
+    await animationFrame();
+    expect.verifySteps([]);
+    expect(queuedMethods()).toEqual(["crm.lead.web_save"]);
+    expect(queuedCalls()[0].args).toEqual([[1], { priority: "1" }]);
+
+    await setOffline(false);
+    await expect.waitForSteps([`server: web_save [[1],{"priority":"1"}]`]);
+    expect(queuedCalls()).toEqual([]);
+    expect(MockServer.env["crm.lead"].browse(1)[0].priority).toBe("1");
+});
+
+test.tags("desktop");
+test("[Offline] forecast: a lead quick-created offline is queued and replayed", async () => {
+    mockDate("2023-09-01 00:00:00");
+    onRpc("crm.lead", "web_save", ({ args }) => {
+        expect.step(`server: web_save ${JSON.stringify(args[0])}`);
+    });
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(2);
+    expect(".o_kanban_group").not.toHaveCount(0);
+    // online, quick create once: the framework keeps its form and its defaults
+    await createKanbanRecord();
+    await discardKanbanRecord();
+    await runAllTimers();
+
+    await setOffline(true);
+    expect("button.o-kanban-button-new").not.toHaveClass("o_disabled_offline");
+    await createKanbanRecord();
+    await editKanbanRecordQuickCreateInput("name", "Forecast lead offline");
+    await validateKanbanRecord();
+    await animationFrame();
+    // the cached defaults are refreshed from the network in the background: that fails
+    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\/crm\.lead\/onchange"/]);
+    expect.verifySteps([]);
+    expect(queuedMethods()).toEqual(["crm.lead.web_save"]);
+    expect(queuedCalls()[0].args[0]).toEqual([]);
+    expect(queuedCalls()[0].args[1].name).toBe("Forecast lead offline");
+
+    await setOffline(false);
+    await expect.waitForSteps(["server: web_save []"]);
+    expect(queuedCalls()).toEqual([]);
+    expect(MockServer.env["crm.lead"].search([["name", "=", "Forecast lead offline"]])).toHaveLength(1);
 });
 

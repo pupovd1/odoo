@@ -3,7 +3,7 @@ import { insertText } from "@html_editor/../tests/_helpers/user_actions";
 import { HtmlField } from "@html_editor/fields/html_field";
 import { defineMailModels } from "@mail/../tests/mail_test_helpers";
 import { expect, test } from "@odoo/hoot";
-import { advanceTime, animationFrame, click, queryOne, runAllTimers } from "@odoo/hoot-dom";
+import { advanceTime, animationFrame, click, queryAllTexts, queryOne, runAllTimers } from "@odoo/hoot-dom";
 import {
     contains,
     defineActions,
@@ -18,6 +18,7 @@ import {
     toggleActionMenu,
     toggleMenuItem,
 } from "@web/../tests/web_test_helpers";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { WebClient } from "@web/webclient/webclient";
 import {
     CrmLead,
@@ -33,8 +34,9 @@ defineMailModels();
 const leadForm = `
     <form js_class="crm_form">
         <header>
-            <button name="action_set_won_rainbowman" string="Won" type="object" data-available-offline="1"
-                invisible="won_status == 'won' or type == 'lead' or not active or not id"/>
+            <button name="action_set_won_rainbowman" string="Won" type="object"
+                data-available-offline="1" data-crm-offline-needs-id="1"
+                invisible="won_status == 'won' or type == 'lead' or not active"/>
             <field name="stage_id" widget="crm_statusbar" options="{'clickable': '1'}"/>
         </header>
         <sheet>
@@ -171,6 +173,48 @@ test("[Offline] the offline systray labels the calls crm queues", async () => {
         (badge) => badge.textContent.trim()
     );
     expect(labels).toEqual(["Activity scheduled", "Call logged", "Activity done", "Won"]);
+});
+
+test("[Offline] the offline systray labels a queued Restore, and any call it has no status for", async () => {
+    CrmLead._views = {
+        form: `
+            <form js_class="crm_form">
+                <header>
+                    <button name="action_restore" string="Restore" type="object" data-available-offline="1"
+                        invisible="won_status != 'lost'"/>
+                </header>
+                <sheet>
+                    <field name="name"/>
+                    <field name="probability"/>
+                    <field name="automated_probability" invisible="1"/>
+                    <field name="won_status" invisible="1"/>
+                    <field name="active" invisible="1"/>
+                </sheet>
+            </form>`,
+        search: `<search/>`,
+    };
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction({
+        name: "Leads",
+        res_model: "crm.lead",
+        res_id: 5,
+        type: "ir.actions.act_window",
+        views: [[false, "form"]],
+    });
+    await runAllTimers();
+
+    await setOffline(true);
+    await contains("button[name=action_restore]").click();
+    // a call of another addon, which no one labels
+    getService(OfflinePlugin).scheduleORM("crm.lead", "action_other_addon", [[5]], {}, {
+        extras: { timeStamp: Date.now() + 1000, actionName: "Leads", displayName: "Lost bid" },
+    });
+    await animationFrame();
+    expect(queuedMethods()).toEqual(["crm.lead.action_restore", "crm.lead.action_other_addon"]);
+    await contains(".o_menu_systray .o_offline_systray").click();
+    expect(queryAllTexts(".o_offline_systray_content .o_badge")).toEqual(["Restored", "Pending"]);
+    expect(".o_offline_systray_content").toHaveText(/Lost bid/);
 });
 
 // Lead writes the framework queues by itself (inventory QUEUE rows B16, B17, B20, B22,

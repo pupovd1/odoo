@@ -184,7 +184,8 @@ test("[Offline] team switcher: no group probe, dropdown disabled, Manage Teams u
     // the teams come from the cache: the framework's refresh fails in the background
     expect.verifySteps(["crm.team/get_team_switcher_data"]);
     // (get_team_switcher_data and web_read_group, in either order)
-    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\//, /Connection to "\/web\/dataset\/call_kw\//]);
+    const refresh = /Connection to "\/web\/dataset\/call_kw\/(crm\.team\/get_team_switcher_data|crm\.lead\/web_read_group)"/;
+    await expect.waitForErrors([refresh, refresh]);
 
     // back online: probed, enabled, Manage Teams reachable again
     await setOffline(false);

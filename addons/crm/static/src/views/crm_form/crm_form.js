@@ -1,3 +1,4 @@
+import { getQueuedCalls, getQueuedResIds } from "@crm/mobile/offline_hooks";
 import { checkRainbowmanMessage } from "@crm/views/check_rainbowman_message";
 import { useOnChange } from "@odoo/owl";
 import { _t } from "@web/core/l10n/translation";
@@ -7,6 +8,9 @@ import { getScheduleORMExtras } from "@web/model/relational_model/utils";
 import { useSubEnv } from "@web/owl2/utils";
 import { formView } from "@web/views/form/form_view";
 import { OfflineActionHelper } from "@web/views/offline_action_helper";
+
+/** What mark won gives the lead at once, offline (the won stage comes at replay). */
+const WON_VALUES = { won_status: "won", probability: 100, active: true };
 
 class CrmFormRecord extends formView.Model.Record {
      /**
@@ -102,7 +106,7 @@ class CrmFormRecord extends formView.Model.Record {
      */
     markWonOffline() {
         this._scheduleOffline("action_set_won");
-        this._applyLocalValues({ won_status: "won", probability: 100, active: true });
+        this._applyLocalValues(WON_VALUES);
     }
 
     /**
@@ -111,12 +115,37 @@ class CrmFormRecord extends formView.Model.Record {
      */
     restoreOffline() {
         this._scheduleOffline("action_restore");
-        this._applyLocalValues({
+        this._applyLocalValues(this._restoredValues());
+    }
+
+    _restoredValues() {
+        return {
             won_status: "pending",
             active: true,
             lost_reason_id: false,
             probability: this.data.automated_probability,
-        });
+        };
+    }
+
+    /**
+     * The lead opened again before its queued Won / Restore replayed (the data
+     * read online predates them): show what they make of it, as when clicked.
+     * Calls parked with an error are left out.
+     */
+    applyQueuedCalls() {
+        const calls = getQueuedCalls(this.model.offlinePlugin).filter(
+            (call) =>
+                call.model === "crm.lead" &&
+                !call.extras?.error &&
+                getQueuedResIds(call).includes(this.resId)
+        );
+        for (const call of calls) {
+            if (call.method === "action_set_won") {
+                this._applyLocalValues(WON_VALUES);
+            } else if (call.method === "action_restore") {
+                this._applyLocalValues(this._restoredValues());
+            }
+        }
     }
 
     /** Show values the queued call will give the lead, for the fields of this form. */
@@ -161,6 +190,11 @@ class CrmFormModel extends formView.Model {
         } catch (error) {
             const resId = "resId" in params ? params.resId : this.config.resId;
             if (error instanceof ConnectionLostError && this.couldNotLoadRootOffline && resId) {
+                if (resId === this.root?.resId && !this.unavailableResId) {
+                    // the lead shown, reloaded offline: keep showing it
+                    this.couldNotLoadRootOffline = false;
+                    return;
+                }
                 this.unavailableResId = resId;
                 this.config = { ...this.config, resId };
                 this.root = this._createRoot(this.config, {});
@@ -205,6 +239,15 @@ export class CrmFormController extends formView.Controller {
             },
             { initialRun: false }
         );
+    }
+
+    /** @override */
+    async onRootLoaded() {
+        await super.onRootLoaded(...arguments);
+        const root = this.model.root;
+        if (root.resModel === "crm.lead" && root.resId && !this.model.unavailableResId) {
+            root.applyQueuedCalls();
+        }
     }
 
     displayName() {

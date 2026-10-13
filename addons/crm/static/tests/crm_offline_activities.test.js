@@ -1,6 +1,6 @@
 import { defineMailModels } from "@mail/../tests/mail_test_helpers";
 import { expect, test } from "@odoo/hoot";
-import { animationFrame, runAllTimers } from "@odoo/hoot-dom";
+import { animationFrame, queryAllTexts, runAllTimers } from "@odoo/hoot-dom";
 import {
     contains,
     defineModels,
@@ -42,8 +42,9 @@ const activityForm = `
  * as it does long before a user goes offline (hoot's mock of the browser's lock
  * API doesn't serialize it with the sync at reconnect).
  */
-async function openLeadWithActivities() {
+async function openLeadWithActivities({ before } = {}) {
     await makeMockServer();
+    before?.();
     MockServer.env["mail.activity.type"].create({ name: "Meeting", category: "meeting" });
     const [activityId] = MockServer.env["mail.activity"].create([
         {
@@ -108,10 +109,12 @@ test("[Offline] schedule an activity: one queued create with client-resolved val
 
     // replayed once back online; the panel hides
     await setOffline(false);
-    // (the panel's refresh and the replay, in either order)
-    await expect.waitForSteps(["mail.activity/search_read", "mail.activity/create"], {
-        ignoreOrder: true,
-    });
+    // (the panel's refresh at reconnect and the replay, in either order; then the
+    // panel reads the replayed result)
+    await expect.waitForSteps(
+        ["mail.activity/search_read", "mail.activity/create", "mail.activity/search_read"],
+        { ignoreOrder: true }
+    );
     expect(queuedCalls()).toEqual([]);
     expect(".o_crm_offline_activities").toHaveCount(0);
     const summaries = MockServer.env["mail.activity"]
@@ -172,3 +175,45 @@ test("[Offline] log a call: one queued crm.lead call, listed as pending sync", a
     await expect.waitForSteps(["crm.lead/action_log_call"]);
     expect(queuedCalls()).toEqual([]);
 });
+
+test("[Offline] schedule an activity for the lead's salesperson: the queued create carries that assignee", async () => {
+    let salespersonId;
+    const setOffline = mockCrmOffline(["mail.activity/create"]);
+    await openLeadWithActivities({
+        before: () => {
+            const [partnerId] = MockServer.env["res.partner"].create([{ name: "Sales Rep" }]);
+            [salespersonId] = MockServer.env["res.users"].create([
+                { name: "Sales Rep", login: "rep", partner_id: partnerId },
+            ]);
+            MockServer.env["crm.lead"].write([1], { user_id: salespersonId });
+        },
+    });
+
+    await setOffline(true);
+    // the current user, then the lead's salesperson
+    expect(queryAllTexts(".o_crm_offline_activity_assignee option")).toEqual([
+        queryAllTexts(".o_crm_offline_activity_assignee option")[0],
+        "Sales Rep",
+    ]);
+    await contains(".o_crm_offline_activity_assignee").select(String(salespersonId));
+    await contains(".o_crm_offline_activity_summary").edit("Visit the customer");
+    await contains(".o_crm_offline_schedule_button").click();
+    expect.verifySteps([]);
+    expect(queuedCalls()[0].args[0][0]).toEqual({
+        res_model: "crm.lead",
+        res_id: 1,
+        activity_type_id: queuedCalls()[0].args[0][0].activity_type_id,
+        summary: "Visit the customer",
+        date_deadline: queuedCalls()[0].args[0][0].date_deadline,
+        user_id: salespersonId,
+    });
+
+    await setOffline(false);
+    await expect.waitForSteps(["mail.activity/create"]);
+    const [scheduled] = MockServer.env["mail.activity"].search_read(
+        [["summary", "=", "Visit the customer"]],
+        ["user_id"]
+    );
+    expect(scheduled.user_id[0]).toBe(salespersonId);
+});
+

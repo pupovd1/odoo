@@ -50,6 +50,8 @@ export function useCrmOffline() {
     const crmOffline = {
         /** @returns {boolean} */
         isOffline: () => offlinePlugin.isOffline(),
+        /** @returns {boolean} whether the queue is being replayed */
+        isSyncing: () => offlinePlugin.syncingORM(),
         /**
          * @param {string} [model] only the calls on this model
          */

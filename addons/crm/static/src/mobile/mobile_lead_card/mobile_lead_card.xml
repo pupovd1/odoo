@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="crm.MobileLeadCard">
+        <div class="o_crm_mobile_card o_kanban_record card mb-2" t-att-data-id="this.props.record.id">
+            <button type="button" class="o_crm_mobile_card_open btn text-start w-100 d-flex flex-column gap-1 p-3"
+                data-available-offline="" t-on-click="() => this.props.openRecord(this.props.record)">
+                <span class="o_crm_mobile_card_name fw-bold text-truncate w-100" t-out="this.data.name"/>
+                <span t-if="this.contactName" class="o_crm_mobile_card_partner text-muted text-truncate w-100"
+                    t-out="this.contactName"/>
+                <span class="d-flex align-items-center w-100 gap-2">
+                    <span class="o_crm_mobile_card_revenue" t-out="this.revenue"/>
+                    <span t-if="this.isPendingSync" class="o_crm_pending_sync badge text-bg-warning ms-auto">Pending sync</span>
+                </span>
+            </button>
+        </div>
+    </t>
+
+</templates>

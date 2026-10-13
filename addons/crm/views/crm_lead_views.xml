@@ -7,13 +7,11 @@
                 <form class="o_lead_opportunity_form" js_class="crm_form">
                     <header>
                         <!-- Won and Restore are queued offline (crm_form); a lead created offline
-                             has no id yet, so its Won button stays unavailable offline -->
-                        <button name="action_set_won_rainbowman" string="Won"
-                            type="object" class="oe_highlight" data-hotkey="w" data-available-offline="1"
-                            invisible="won_status == 'won' or type == 'lead' or not active or not id"/>
+                             has no id yet: its Won button is unavailable offline until synced -->
                         <button name="action_set_won_rainbowman" string="Won"
                             type="object" class="oe_highlight" data-hotkey="w"
-                            invisible="won_status == 'won' or type == 'lead' or not active or id"/>
+                            data-available-offline="1" data-crm-offline-needs-id="1"
+                            invisible="won_status == 'won' or type == 'lead' or not active"/>
                         <button name="action_convert_to_opportunity" string="Convert to Opportunity" type="object"
                             class="oe_highlight" invisible="type == 'opportunity' or not active" data-hotkey="v"/>
                         <button name="action_restore" string="Restore" type="object" data-hotkey="x"
@@ -507,7 +505,7 @@
             <field name="priority" eval="1"/>
             <field name="arch" type="xml">
                 <kanban  highlight_color="color" default_group_by="stage_id" class="o_kanban_small_column o_opportunity_kanban" on_create="quick_create" quick_create_view="crm.quick_create_opportunity_form"
-                    archivable="false" sample="1" js_class="crm_kanban">
+                    archivable="false" sample="1" js_class="crm_kanban" mobile_pipeline="1">
                     <field name="stage_id" options='{"group_by_tooltip": {"requirements": "Description"}}'/>
                     <field name="probability"/>
                     <field name="active"/>
@@ -578,6 +576,8 @@
                 <xpath expr="//kanban" position="attributes">
                     <attribute name="default_group_by">date_deadline</attribute>
                     <attribute name="js_class">forecast_kanban</attribute>
+                    <!-- the forecast's own renderer has no small-screen pipeline -->
+                    <attribute name="mobile_pipeline"/>
                 </xpath>
                 <xpath expr="//kanban" position="inside">
                     <field name="date_deadline"/>

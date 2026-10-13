@@ -1,7 +1,10 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
-from odoo.addons.crm.tests.common import TestCrmCommon
+from lxml import etree
+
 from odoo.tests import Form, HttpCase, tagged
+
+from odoo.addons.crm.tests.common import TestCrmCommon
 
 
 @tagged('post_install', '-at_install')
@@ -202,6 +205,50 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
         self.assertIn('Wants delivery before May.', call_messages.body)
         self.assertEqual(call_messages.author_id, self.user_sales_salesman.partner_id)
 
+    def test_offline_quick_create_replay(self):
+        """ The small-screen quick create, offline, queues crm.lead.create with
+        exactly the six values it captures and the pipeline's defaults in the
+        context: replaying it as the salesman creates the lead with those values,
+        the defaults applying as online. """
+        self.authenticate(self.user_sales_salesman.login, self.user_sales_salesman.login)
+        values = {
+            'name': 'Quick lead offline',
+            'contact_name': 'Ana Road',
+            'phone': '+32 470 00 00 00',
+            'email_from': 'ana@example.com',
+            'expected_revenue': 1500,
+            'stage_id': self.stage_team1_2.id,
+        }
+        lead_ids = self._replay('crm.lead', 'create', [[values]], {
+            'context': {'default_type': 'opportunity', 'default_team_id': self.sales_team_1.id},
+        })
+        lead = self.env['crm.lead'].browse(lead_ids)
+        self.assertEqual(len(lead), 1)
+        self.assertRecordValues(lead, [{
+            **values,
+            'type': 'opportunity',
+            'team_id': self.sales_team_1.id,
+            'user_id': self.user_sales_salesman.id,
+            'active': True,
+        }])
+
+    def test_mobile_pipeline_wiring(self):
+        """ The small-screen pipeline is a branch of the crm_kanban renderer
+        (no new view, action or js_class), enabled by the pipeline's arch only:
+        other crm kanban views (the leads kanban, the forecast) keep the kanban
+        on small screens. """
+        kanban_view = self.env.ref('crm.crm_lead_action_pipeline_view_kanban').view_id
+        self.assertEqual(kanban_view, self.env.ref('crm.crm_case_kanban_view_leads'))
+        arch = kanban_view.arch
+        self.assertIn('js_class="crm_kanban"', arch)
+        self.assertIn('mobile_pipeline="1"', arch)
+        self.assertNotIn('mobile_pipeline', self.env.ref('crm.view_crm_lead_kanban').arch)
+        # the forecast kanban inherits the pipeline's arch, but its own renderer has
+        # no small-screen pipeline: the marker is removed there
+        forecast = etree.fromstring(self.env.ref('crm.crm_lead_view_kanban_forecast').get_combined_arch())
+        self.assertEqual(forecast.get('js_class'), 'forecast_kanban')
+        self.assertIsNone(forecast.get('mobile_pipeline'))
+
     def test_offline_wiring_and_unavailable_actions(self):
         """ The screens of decisions D13 and D16 are opted out of the offline
         cache, so the framework never makes them available offline; the stage list
@@ -223,6 +270,24 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
             with self.subTest(action=xmlid):
                 self.assertTrue(self.env.ref(xmlid).cache)
         self.assertIn('js_class="crm_stage_list"', self.env.ref('crm.crm_stage_tree').arch)
+
+    def test_offline_wiring_of_the_lead_form(self):
+        """ The lead form's arch wires the offline behaviour: one Won button,
+        available offline once the lead has an id (sale_crm's view targets it by
+        name), Restore available offline, the crm stage bar and the offline
+        activity panel. """
+        arch = etree.fromstring(self.env.ref('crm.crm_lead_view_form').arch)
+        self.assertEqual(arch.get('js_class'), 'crm_form')
+        won_buttons = arch.xpath("//header/button[@name='action_set_won_rainbowman']")
+        self.assertEqual(len(won_buttons), 1)
+        self.assertEqual(won_buttons[0].get('data-available-offline'), '1')
+        self.assertEqual(won_buttons[0].get('data-crm-offline-needs-id'), '1')
+        self.assertNotIn('id', won_buttons[0].get('invisible'))
+        [restore] = arch.xpath("//header/button[@name='action_restore']")
+        self.assertEqual(restore.get('data-available-offline'), '1')
+        [stage] = arch.xpath("//header/field[@name='stage_id']")
+        self.assertEqual(stage.get('widget'), 'crm_statusbar')
+        self.assertEqual(len(arch.xpath("//sheet//widget[@name='crm_offline_activities']")), 1)
 
     def test_offline_markers_in_crm_archs(self):
         """ The <a> view buttons that need a server carry the marker crm uses to

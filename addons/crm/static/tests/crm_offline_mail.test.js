@@ -152,7 +152,8 @@ test("[Offline] the lead chatter is read-only offline, with no uncaught error", 
     await contains(".o_crm_chatter_offline");
     expect(storeCalls).toBe(0);
     // (web_search_read and web_read, in either order)
-    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\//, /Connection to "\/web\/dataset\/call_kw\//]);
+    const refresh = /Connection to "\/web\/dataset\/call_kw\/crm\.lead\/(web_search_read|web_read)"/;
+    await expect.waitForErrors([refresh, refresh]);
 
     // back online: the chatter reloads and is usable again
     await setOffline(false);
