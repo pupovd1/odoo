@@ -40,10 +40,10 @@ test file and test name.
 
 | Classification | Rows |
 |---|---|
-| QUEUE | 23 |
+| QUEUE | 30 |
 | SKIP | 7 |
 | DISABLE | 146 |
-| Total | 176 |
+| Total | 183 |
 
 ## A. JavaScript calls (addons/crm/static/src)
 
@@ -64,8 +64,8 @@ test file and test name.
 | A13 | addons/crm/static/src/components/team_switcher/team_switcher.js:83 | `this.actionService.doAction("sales_team.crm_team_action_config")` | DISABLE | crm (M2) | Navigation to team configuration; defect 3: Manage Teams is unreachable offline (not rendered, handler returns early). | JS05 |
 | A14 | addons/crm/static/src/components/team_switcher/team_switcher.js:97 | `this.env.searchModel._updateSwitcherSelection(teamId);` | DISABLE | crm (M2) | Switching team reloads the pipeline with a domain that is not cached; defect 3: the dropdown is disabled offline and the handler returns early. The selected team stays visible as a search facet (CrmSearchModel.getCurrentSearch). | JS05 |
 | A15 | addons/crm/static/src/views/check_rainbowman_message.js:2 | `orm.call("crm.lead", "get_rainbowman_message", [[recordId]])` | SKIP | crm (M2) | Visual effect lookup (rule 2 example); its callers skip it offline and it is never queued (a replay would fire the effect detached from the save). | JS01, JS04 |
-| A16 | addons/crm/static/src/views/crm_form/crm_form.js:61 | `const res = await super._save(...arguments);` (lead form save, web_save) | QUEUE | framework (record `_offlineSave`) | Write on crm.lead with client-resolvable values; queued and replayed in order. The email and phone that CrmFormRecord force-saves for partner sync are part of the queued write (KICKOFF defect 2). | JS03, PY01 |
-| A17 | addons/crm/static/src/views/crm_form/crm_form.js:63 | `await checkRainbowmanMessage(this.model.orm, this.model.effect, this.resId);` | SKIP | crm (M2) | Rainbowman after a stage change; KICKOFF defect 1: skipped offline, the save still completes; still issued online. | JS01, JS02 |
+| A16 | addons/crm/static/src/views/crm_form/crm_form.js:65 | `const res = await super._save(...arguments);` (lead form save, web_save) | QUEUE | framework (record `_offlineSave`) | Write on crm.lead with client-resolvable values; queued and replayed in order. The email and phone that CrmFormRecord force-saves for partner sync are part of the queued write (KICKOFF defect 2). | JS03, PY01 |
+| A17 | addons/crm/static/src/views/crm_form/crm_form.js:67 | `await checkRainbowmanMessage(this.model.orm, this.model.effect, this.resId);` | SKIP | crm (M2) | Rainbowman after a stage change; KICKOFF defect 1: skipped offline, the save still completes; still issued online. | JS01, JS02 |
 | A18 | addons/crm/static/src/views/crm_form/crm_pls_tooltip_button.js:57 | `await this.props.record.save();` (before the PLS tooltip) | DISABLE | crm (M2) | Only runs when the predictive-scoring tooltip opens; predictive lead scoring is out of scope; KICKOFF defect 6: the button is disabled offline, no lookup. | JS08 |
 | A19 | addons/crm/static/src/views/crm_form/crm_pls_tooltip_button.js:63 | `const tooltipData = await this.orm.call(` (`prepare_pls_tooltip_data`) | DISABLE | crm (M2) | Recomputes and writes server-computed probabilities (out of scope); defect 6. | JS08 |
 | A20 | addons/crm/static/src/views/crm_form/crm_pls_tooltip_button.js:69 | `await this.props.record.load();` | DISABLE | crm (M2) | Reload after A19, same control. | JS08 |
@@ -95,7 +95,7 @@ test file and test name.
 | B10 | addons/crm/views/crm_lead_views.xml:104 | `<widget name="pls_tooltip_button" class="d-inline-block"` | DISABLE | crm (M2) | KICKOFF defect 6: predictive-scoring tooltip button disabled offline, no lookup. | JS08 |
 | B11 | addons/crm/views/crm_lead_views.xml:136 | `<widget name="pls_tooltip_button" invisible=` (touch block) | DISABLE | crm (M2) | KICKOFF defect 6 (touch block of the form): disabled offline, no lookup. | JS08 |
 | B12 | addons/crm/views/crm_lead_views.xml:144 | `name="action_set_automated_probability"` (AI link, touch block) | DISABLE | crm (M2) | Predictive lead scoring, touch block (out of scope); an `<a>` is not disabled by the framework, so crm disables it offline. | JS42 |
-| B13 | addons/crm/views/crm_lead_views.xml:172 | `<field name="partner_id" widget="res_partner_many2one"` (Create / Create and edit a contact) | DISABLE | framework (no Create option offline) | Creating a contact produces an id that a queued lead write would reference (an id produced by another call); offline the framework's autocomplete offers no Create. Picking an existing contact is saved by A16; the contact search itself is a framework read (Not classified). | JS23 |
+| B13 | addons/crm/views/crm_lead_views.xml:172 | `<field name="partner_id" widget="res_partner_many2one"` (Create / Create and edit a contact) | DISABLE | framework (no Create option offline) | Creating a contact produces an id that a queued lead write would reference (an id produced by another call); offline the framework's autocomplete offers no Create. Picking an existing contact is saved by A16; the contact search itself is a framework read (Not classified). On small screens, offline, the lead form's relational fields use that autocomplete instead of the search dialog (crm patch, decision D22). | JS23 |
 | B14 | addons/crm/views/crm_lead_views.xml:217 | `name="mail_action_blacklist_remove"` | DISABLE | framework (`<button>`) | Opens the mail.blacklist.remove wizard. | JS33 |
 | B15 | addons/crm/views/crm_lead_views.xml:230 | `name="phone_action_blacklist_remove"` | DISABLE | framework (`<button>`) | Opens the phone.blacklist.remove wizard. | JS33 |
 | B16 | addons/crm/views/crm_lead_views.xml:247 | `<field name="priority" widget="priority" nolabel="1"` (also :246, kanban cards :373, :546) | QUEUE | framework (opted-in stars, web_save) | Write on crm.lead, client-resolvable; queued. | JS34 |
@@ -166,7 +166,7 @@ test file and test name.
 | B81 | addons/crm/views/crm_team_views.xml:331 | `name="%(crm.crm_activity_report_action_team)d"` (dashboard report) | DISABLE | crm data (M2) | Server-computed report on the Teams dashboard (B73). | PY10 |
 | B82 | addons/crm/views/crm_stage_views.xml:22 | `<list string="Stages" multi_edit="1" js_class="crm_stage_list">` (cell and multi-record edit) | DISABLE | crm (M2) | List multi-edit and cell editing (ANSWERS); stages are edited from their form (B84). | JS43 |
 | B83 | addons/crm/views/crm_stage_views.xml:23 | `<field name="sequence" widget="handle"/>` (reorder stages) | DISABLE | crm (M2) | Stage reorder (ANSWERS); web_resequence has no offline fallback. | JS43 |
-| B84 | addons/crm/views/crm_stage_views.xml:37 | `<form string="Stage">` (save) | QUEUE | framework (web_save) | Write on crm.stage, client-resolvable; its only onchange is an advisory warning. | JS43 |
+| B84 | addons/crm/views/crm_stage_views.xml:37 | `<form string="Stage">` (save) | QUEUE | framework (web_save) | Write on crm.stage, client-resolvable; its only onchange is an advisory warning. | JS59 |
 | B85 | addons/crm/views/crm_lost_reason_views.xml:22 | `name="action_lost_leads"` (lost reason stat button) | DISABLE | framework (`<button>`) | Navigation built by a server call. | PY10 (its screen, Lost Reasons, is never available offline) |
 | B86 | addons/crm/views/crm_lost_reason_views.xml:49 | `<list string="Channel" editable="bottom">` (lost reasons) | DISABLE | crm data (M2) | Writes crm.lost.reason, outside the queueable models; crm opts the Lost Reasons action out of the offline cache, so it is unavailable offline. | PY10 |
 | B87 | addons/crm/views/crm_recurring_plan_views.xml:8 | `<list editable="bottom">` (recurring plans) | DISABLE | crm data (M2) | Writes crm.recurring.plan, outside the queueable models; action opted out of the offline cache. | PY10 |
@@ -226,8 +226,8 @@ test file and test name.
 | C16 | addons/crm/models/crm_lead.py:1854 | `def convert_opportunity(self, partner, user_ids=False, team_id=False):` | DISABLE | framework | Takes a res.partner recordset (not replayable as JSON); reached through C14 and the mass convert wizard. | JS33 |
 | C17 | addons/crm/models/crm_lead.py:2170 | `def get_import_templates(self):` | DISABLE | crm (M2) | CSV import (A10). | JS06 (inside Generate: can't open offline, closes when the connection drops) |
 | C18 | addons/crm/models/crm_lead.py:2817 | `def prepare_pls_tooltip_data(self):` | DISABLE | crm (M2) | Predictive lead scoring (A19). | JS08 |
-| C19 | addons/crm/models/crm_stage.py:70 | `def write(self, vals):` (stage form save) | QUEUE | framework (web_save) | Write on crm.stage, client-resolvable (B84). | JS43 |
-| C20 | addons/crm/models/crm_team.py:120 | `def write(self, vals):` (team form save) | QUEUE | framework (web_save) | Write on crm.team, client-resolvable. | JS43 |
+| C19 | addons/crm/models/crm_stage.py:70 | `def write(self, vals):` (stage form save) | QUEUE | framework (web_save) | Write on crm.stage, client-resolvable (B84). | JS59 |
+| C20 | addons/crm/models/crm_team.py:120 | `def write(self, vals):` (team form save) | QUEUE | framework (web_save) | Write on crm.team, client-resolvable. | JS60 |
 | C21 | addons/crm/models/crm_team.py:131 | `def unlink(self):` (team Delete) | DISABLE | crm (M2) | Destructive admin action (ANSWERS); crm makes Delete unavailable offline for crm.team (and for crm.stage). | JS43 |
 | C22 | addons/crm/models/crm_team.py:211 | `def action_assign_leads(self):` | DISABLE | framework (`<button>`) | Server-side batch assignment (B71, B94). | rule shown by JS33 (framework: every `<button>` without the attribute) |
 | C23 | addons/crm/models/crm_team.py:762 | `def action_open_opportunities(self):` | DISABLE | framework (`<button>`) | Navigation built by a server call (B72). | rule shown by JS33 (framework: every `<button>` without the attribute) |
@@ -241,6 +241,20 @@ test file and test name.
 Added with milestones M3 and M4 (activities offline, mobile quick create, offline mark won and
 restore); each is listed here with its class when it lands.
 
+| # | File:line | Call | Class | Enforced by | Justification | Test |
+|---|---|---|---|---|---|---|
+| D1 | addons/crm/static/src/views/crm_form/crm_form.js:104 | `this._scheduleOffline("action_set_won");` (Won, offline) | QUEUE | crm (M3) | Write on crm.lead with its id only: `action_set_won` picks the won stage of the lead's team at replay. The form shows the lead won at once; no rainbowman (it would show detached from the action). A lead created offline has no id yet: its Won button is the server-only one, disabled offline. | JS11, JS55, PY02 |
+| D2 | addons/crm/static/src/views/crm_form/crm_form.js:113 | `this._scheduleOffline("action_restore");` (Restore, offline) | QUEUE | crm (M3) | Write on crm.lead with its id only; the form shows the lead as not lost at once (probability back to the automated one). | JS35 |
+| D3 | addons/crm/static/src/mobile/offline_activities/offline_activities.js:167 | `schedule() {` (offline activity panel: Schedule) | QUEUE | crm (M3) | A lead's mail.activity create with a fully client-resolved argument list (model name, record id, type, summary, deadline, assignee); the type comes from the activity types cached online, and with none cached the control is disabled. Meeting types are not offered (a calendar event is unreachable offline). Shown at once as pending sync. | JS18, JS19, PY03 |
+| D4 | addons/crm/static/src/mobile/offline_activities/offline_activities.js:190 | `logCall() {` (offline activity panel: Log a call) | QUEUE | crm (M3) | One crm.lead call with the lead's id and the call summary (D6); shown at once as pending sync. | JS21, PY05 |
+| D5 | addons/crm/static/src/mobile/offline_activities/offline_activities.js:205 | `markDone(activity) {` (offline activity panel: Mark done) | QUEUE | crm (M3) | `mail.activity.action_done` with the activity's id: only the state change; the activity shows "Done · Pending sync". | JS20, PY04 |
+| D6 | addons/crm/models/crm_lead.py:1299 | `def action_log_call(self, summary=False, feedback=False):` | QUEUE | crm (M3) | Public method added for D4: creates a Call activity on each lead and marks it done in one call, as the user (no sudo: access rights apply). Replayed verbatim from the queue. | JS21, PY05 |
+| D7 | addons/crm/models/mail_activity.py:11 | `def create(self, vals_list):` (mail.activity, crm side) | QUEUE | crm (M3) | Receives D3's create: resolves the model name crm.lead to its ir.model id on the server, so the client needs no id produced by another call. Other models are untouched. | PY03 |
+
+The offline activity panel's reads (the lead's activities and the activity types,
+`offline_activities.js:126`) and the small-screen relational search of the lead form (decision D22)
+are reads answered by the framework's caches: see "Not classified".
+
 ## Not classified
 
 - Menus in `views/crm_menu_views.xml` are navigation, not calls or buttons: offline the framework's
@@ -250,7 +264,9 @@ restore); each is listed here with its class when it lands.
 - Relational-field searches (the lead's contact, salesperson with crm's context from
   `many2one_avatar_leader_user.js:15`, tags) are the framework's Many2XAutocomplete reads: offline it
   still sends web_name_search, swallows the connection error and answers from its relational-field
-  (many2x) cache, without Create / Search More. With partner_autocomplete installed, the contact
+  (many2x) cache, without Create / Search More. On small screens the framework opens a search dialog
+  instead, which can't search offline: offline, the lead form's relational fields use the
+  autocomplete there too (crm patch of Many2XAutocomplete, scoped to the lead form, decision D22). With partner_autocomplete installed, the contact
   field also tries its IAP lookup (`res.partner.autocomplete_by_field`) and swallows the failure;
   crm can't change that module (not a dependency). Known limit (ANSWERS: the call fails silently and
   cached results still show).
@@ -258,6 +274,10 @@ restore); each is listed here with its class when it lands.
   (`sales_team.sales_team_crm_tag_action`, crm.tag) and Customers (`base.action_partner_form`,
   res.partner) are shared with Sales and Contacts, so crm does not change them; once visited online,
   the framework queues their saves. Known limit.
+- The offline activity panel (D3 to D5) reads the lead's activities and the activity types through
+  the framework's RPC disk cache (`orm.cache({ type: "disk" })`): refreshed whenever the lead form
+  loads online, read from memory once offline. A lead whose panel never loaded online lists no
+  activity and offers no Schedule (no cached type); Log a call still works.
 - View data loads (pipeline, lists, forms, forecast) go through the framework's RelationalModel and
   its RPC disk cache; a view never loaded online shows the offline action helper.
 - Client-only checks with no server call: `user.isAdmin` in lead_generation_dropdown.js; the team
@@ -281,7 +301,7 @@ under; "server" for Python). Milestones M3 to M5 add theirs.
 | JS04 | static/tests/crm_offline_kanban.test.js | [Offline] dragging a lead to another stage queues its save, with no rainbowman lookup | desktop |
 | JS05 | static/tests/crm_offline_controls.test.js | [Offline] team switcher: no group probe, dropdown disabled, Manage Teams unreachable, team kept as a facet | desktop, mobile |
 | JS06 | static/tests/crm_offline_controls.test.js | [Offline] lead generation: Generate is disabled offline, with no module lookup or access probe | desktop, mobile |
-| JS07 | static/tests/crm_offline_kanban.test.js | [Offline] the recurring-revenue aggregate is not probed offline and is hidden | desktop |
+| JS07 | static/tests/crm_offline_kanban.test.js | [Offline] the recurring-revenue aggregate is not probed offline and is hidden | desktop, mobile |
 | JS08 | static/tests/crm_offline_form.test.js | [Offline] the predictive-scoring tooltip button is disabled offline, with no lookup | desktop, mobile |
 | JS09 | static/tests/crm_offline_mail.test.js | [Offline] the CRM entry of the activity menu is disabled offline | desktop, mobile |
 | JS10 | static/tests/crm_offline_mail.test.js | [Offline] the lead chatter is read-only offline, with no uncaught error | desktop, mobile |
@@ -302,3 +322,40 @@ under; "server" for Python). Milestones M3 to M5 add theirs.
 | PY10 | tests/test_crm_offline.py | TestCrmOffline.test_offline_wiring_and_unavailable_actions | server |
 | PY11 | tests/test_crm_offline.py | TestCrmOffline.test_offline_markers_in_crm_archs | server |
 | PY12 | tests/test_crm_offline.py | TestCrmOffline.test_offline_partner_change_write_matches_online | server |
+| JS11 | static/tests/crm_offline_form.test.js | [Offline] mark won queues action_set_won and shows the lead as won at once, without the rainbowman | desktop, mobile |
+| JS12 | static/tests/crm_offline_form.test.js | [Online] mark won still calls the server button and shows the rainbowman | desktop, mobile |
+| JS13 | static/tests/crm_offline_form.test.js | [Offline] a lead never opened online shows the offline action helper, then opens once online | desktop, mobile |
+| JS13 | static/tests/crm_offline_form.test.js | [Offline] the pager skips the leads never opened online | desktop, mobile |
+| JS14 | static/tests/crm_offline_form.test.js | [Offline] a stage move from the stage bar is saved offline (queued web_save) | desktop, mobile |
+| JS15 | static/tests/crm_offline_queue.test.js | [Offline] two offline writes to one lead replay in order, the later one wins, no conflict dialog | desktop, mobile |
+| JS16 | static/tests/crm_offline_queue.test.js | [Offline] a rejected replay is parked in the offline systray with its error, no CRM error UI | desktop, mobile |
+| JS17 | static/tests/crm_offline_queue.test.js | [Offline] the offline systray labels the calls crm queues | desktop, mobile |
+| JS18 | static/tests/crm_offline_activities.test.js | [Offline] schedule an activity: one queued create with client-resolved values, shown as pending sync | desktop, mobile |
+| JS19 | static/tests/crm_offline_activities.test.js | [Offline] no activity type was cached: Schedule is disabled, not an empty picker | desktop, mobile |
+| JS20 | static/tests/crm_offline_activities.test.js | [Offline] mark an activity done: only action_done is queued, shown done and pending sync | desktop, mobile |
+| JS21 | static/tests/crm_offline_activities.test.js | [Offline] log a call: one queued crm.lead call, listed as pending sync | desktop, mobile |
+| JS22 | static/tests/crm_offline_activities.test.js | [Online] the offline activity panel renders nothing online and keeps its data cached | desktop, mobile |
+| JS23 | static/tests/crm_offline_partner.test.js | [Offline] the lead's contact search answers from the relational-field cache, without Create | desktop, mobile |
+| JS34 | static/tests/crm_offline_queue.test.js | [Offline] lead edits (priority, contact, tags, description) are queued as one web_save and replayed | desktop, mobile |
+| JS34 | static/tests/crm_offline_queue.test.js | [Offline] a lead created with New offline is queued without an id and created on replay | desktop, mobile |
+| JS34 | static/tests/crm_offline_queue.test.js | [Offline] Archive from the lead form's action menu is queued and replayed | desktop, mobile |
+| JS34 | static/tests/crm_offline_queue.test.js | [Offline] Unarchive of a lost lead from the action menu is queued and replayed | desktop, mobile |
+| JS34 | static/tests/crm_offline_queue.test.js | [Offline] Delete from the lead form's action menu is queued and replayed | desktop, mobile |
+| JS35 | static/tests/crm_offline_form.test.js | [Offline] restore a lost lead: action_restore queued, shown as not lost at once | desktop, mobile |
+| JS37 | static/tests/crm_offline_kanban.test.js | [Offline] a lead quick-created offline is queued in its column's stage and replayed; no contact creation | desktop, mobile |
+| JS49 | static/tests/crm_offline_form.test.js | [Offline] after a partner change made online, an offline save keeps the force-saved values | desktop |
+| JS50 | static/tests/crm_offline_controls.test.js | [Offline] lead form cog menu: Duplicate can't be run offline, Delete still can | desktop, mobile |
+| JS51 | static/tests/crm_offline_controls.test.js | [Offline] unsaved lead cog menu: the framework greys every item, crm makes them inert | desktop, mobile |
+| JS52 | static/tests/crm_offline_controls.test.js | [Offline] stage form cog menu: Delete can't be run offline | desktop, mobile |
+| JS53 | static/tests/crm_offline_kanban.test.js | [Offline] the rotting badge of a column doesn't filter it offline | desktop, mobile |
+| JS54 | static/tests/crm_offline_mail.test.js | [Offline] files dropped on the lead chatter aren't uploaded offline | desktop, mobile |
+| JS55 | static/tests/crm_offline_form.test.js | [Offline] a lead created offline (no id yet) can't be marked won offline | desktop, mobile |
+| JS56 | static/tests/crm_offline_form.test.js | [Online] the lead stage bar keeps the layout of mail's stage bar | desktop, mobile |
+| JS57 | static/tests/crm_offline_partner.test.js | [Online] the lead's contact search offers Create and Search more online | desktop, mobile |
+| JS58 | static/tests/crm_offline_partner.test.js | [Offline] on a small screen, the lead's relational fields search the cache only while offline | mobile |
+| JS59 | static/tests/crm_offline_controls.test.js | [Offline] a crm.stage form save is queued and replayed | desktop, mobile |
+| JS60 | static/tests/crm_offline_controls.test.js | [Offline] a crm.team form save is queued and replayed | desktop, mobile |
+| PY02 | tests/test_crm_offline.py | TestCrmOffline.test_offline_mark_won_replay | server |
+| PY03 | tests/test_crm_offline.py | TestCrmOffline.test_offline_activity_create_replay | server |
+| PY04 | tests/test_crm_offline.py | TestCrmOffline.test_offline_activity_done_replay | server |
+| PY05 | tests/test_crm_offline.py | TestCrmOffline.test_offline_log_call_replay | server |

@@ -39,8 +39,8 @@ const activityForm = `
  * Lead 1 with a planned call, opened online: the panel keeps the lead's
  * activities and the activity types in the framework's cache. A meeting type
  * exists too. The framework's startup sync (3 s after start) runs here, online,
- * as it does long before a user goes offline (hoot's navigator.locks doesn't
- * serialize it with the sync at reconnect).
+ * as it does long before a user goes offline (hoot's mock of the browser's lock
+ * API doesn't serialize it with the sync at reconnect).
  */
 async function openLeadWithActivities() {
     await makeMockServer();

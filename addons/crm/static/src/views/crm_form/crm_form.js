@@ -4,6 +4,7 @@ import { _t } from "@web/core/l10n/translation";
 import { ConnectionLostError } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
 import { getScheduleORMExtras } from "@web/model/relational_model/utils";
+import { useSubEnv } from "@web/owl2/utils";
 import { formView } from "@web/views/form/form_view";
 import { OfflineActionHelper } from "@web/views/offline_action_helper";
 
@@ -146,19 +147,23 @@ class CrmFormModel extends formView.Model {
     }
 
     /**
-     * A lead never loaded online can't be opened offline: instead of failing to
-     * open (the framework leaves the form unmounted), keep an empty placeholder
-     * record so that the form shows the offline action helper.
+     * A lead never loaded online can't be opened offline (from its card, by the
+     * pager...): instead of failing to open (the framework leaves the form
+     * unmounted, or on the previous lead), keep an empty placeholder record of
+     * that lead so that the form shows the offline action helper.
      *
      * @override
      */
-    async load(params) {
+    async load(params = {}) {
         try {
-            return await super.load(...arguments);
+            await super.load(...arguments);
+            this.unavailableResId = false;
         } catch (error) {
-            if (error instanceof ConnectionLostError && this.couldNotLoadRootOffline && !this.root) {
-                this.unavailableResId = this.config.resId;
-                this.root = this._createRoot({ ...this.config, resId: false }, {});
+            const resId = "resId" in params ? params.resId : this.config.resId;
+            if (error instanceof ConnectionLostError && this.couldNotLoadRootOffline && resId) {
+                this.unavailableResId = resId;
+                this.config = { ...this.config, resId };
+                this.root = this._createRoot(this.config, {});
                 await this.hooks.onRootLoaded(this.root);
                 return;
             }
@@ -187,14 +192,15 @@ export class CrmFormController extends formView.Controller {
 
     setup() {
         super.setup();
+        // offline on a small screen, the lead's relational fields search the
+        // relational-field cache (see many2x_autocomplete_patch.js)
+        useSubEnv({ crmLeadForm: true });
         // a lead not available offline opens once the connection is back
         useOnChange(
             () => [this.offlinePlugin.isOffline()],
             (isOffline) => {
                 if (!isOffline && this.model.unavailableResId) {
-                    const resId = this.model.unavailableResId;
-                    this.model.unavailableResId = false;
-                    this.model.load({ resId });
+                    this.model.load({ resId: this.model.unavailableResId });
                 }
             },
             { initialRun: false }

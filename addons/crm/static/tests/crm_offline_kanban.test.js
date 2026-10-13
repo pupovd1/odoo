@@ -4,13 +4,18 @@ import { advanceTime, animationFrame, hover, queryFirst, runAllTimers } from "@o
 import { mockDate } from "@odoo/hoot-mock";
 import {
     contains,
+    createKanbanRecord,
     defineActions,
     defineModels,
+    discardKanbanRecord,
+    editKanbanRecordQuickCreateInput,
     getService,
+    MockServer,
     mountView,
     mountWithCleanup,
     onRpc,
     patchWithCleanup,
+    validateKanbanRecord,
 } from "@web/../tests/web_test_helpers";
 import { user } from "@web/core/user";
 import { AnimatedNumber } from "@web/views/view_components/animated_number";
@@ -18,6 +23,7 @@ import { WebClient } from "@web/webclient/webclient";
 import {
     CrmLead,
     CrmStage,
+    CrmTag,
     CrmTeam,
     mockCrmOffline,
     queuedCalls,
@@ -25,7 +31,8 @@ import {
 } from "@crm/../tests/mock_server/crm_offline_test_helpers";
 
 const pipelineArch = `
-    <kanban js_class="crm_kanban" default_group_by="stage_id" on_create="quick_create">
+    <kanban js_class="crm_kanban" default_group_by="stage_id" on_create="quick_create"
+        quick_create_view="crm.quick_create_opportunity_form">
         <field name="stage_id" options='{"group_by_tooltip": {"name": "Stage"}}'/>
         <progressbar field="activity_state" colors='{"planned": "success", "today": "warning", "overdue": "danger"}'
             sum_field="expected_revenue" recurring_revenue_sum_field="recurring_revenue_monthly"/>
@@ -46,10 +53,18 @@ class Lead extends CrmLead {
         kanban: pipelineArch,
         search: `<search><field name="name"/></search>`,
         form: `<form js_class="crm_form"><field name="name"/></form>`,
+        "form,crm.quick_create_opportunity_form": `
+            <form>
+                <field name="partner_id"/>
+                <field name="name"/>
+                <field name="email_from"/>
+                <field name="phone"/>
+                <field name="expected_revenue"/>
+            </form>`,
     };
 }
 
-defineModels([CrmStage, CrmTeam, Lead]);
+defineModels([CrmStage, CrmTeam, CrmTag, Lead]);
 defineMailModels();
 defineActions([
     {
@@ -273,3 +288,59 @@ test("[Offline] the rotting badge of a column doesn't filter it offline", async 
     await expect.waitForSteps(["crm.lead/web_search_read"]);
     expect(".o_kanban_group:eq(0)").toHaveClass("o_kanban_group_show_danger");
 });
+
+test("[Offline] a lead quick-created offline is queued in its column's stage and replayed; no contact creation", async () => {
+    onRpc("crm.lead", "web_save", ({ args }) => {
+        expect.step(`server: web_save ${JSON.stringify(args[0])}`);
+    });
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    // online, quick create once: the framework keeps its form and its defaults
+    await createKanbanRecord();
+    await discardKanbanRecord();
+    await runAllTimers();
+
+    await setOffline(true);
+    expect("button.o-kanban-button-new").not.toHaveClass("o_disabled_offline");
+    await createKanbanRecord();
+    const contactInput = ".o_kanban_quick_create .o_field_widget[name=partner_id] input";
+    if (getService("ui").isSmall) {
+        // small screens pick a contact in the search dialog, whose New button the
+        // framework disables offline
+        expect(contactInput).toHaveAttribute("readonly");
+    } else {
+        // the contact search offers no creation offline (a queued lead can't link a
+        // contact that only exists after the replay)
+        await contains(contactInput).edit("Chairs", { confirm: false });
+        await runAllTimers();
+        expect(".o_kanban_quick_create .o-autocomplete--dropdown-menu").toHaveCount(1);
+        expect(
+            ".o_m2o_dropdown_option_create, .o_m2o_dropdown_option_create_edit, .o_m2o_dropdown_option_search_more"
+        ).toHaveCount(0);
+        await contains(contactInput).clear({ confirm: false });
+    }
+    await editKanbanRecordQuickCreateInput("name", "Quick lead offline");
+    await editKanbanRecordQuickCreateInput("expected_revenue", "3000");
+    await validateKanbanRecord();
+    await animationFrame();
+    // the cached defaults are refreshed from the network in the background: that fails
+    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\/crm.lead\/onchange"/]);
+    expect.verifySteps([]);
+    expect(queuedMethods()).toEqual(["crm.lead.web_save"]);
+    const [ids, values] = queuedCalls()[0].args;
+    expect(ids).toEqual([]);
+    expect(values.name).toBe("Quick lead offline");
+    expect(values.expected_revenue).toBe(3000);
+    expect(values.stage_id).toBe(1); // the column it was created in
+
+    await setOffline(false);
+    await expect.waitForSteps(["server: web_save []"]);
+    expect(queuedCalls()).toEqual([]);
+    const created = MockServer.env["crm.lead"].search_read(
+        [["name", "=", "Quick lead offline"]],
+        ["stage_id", "expected_revenue"]
+    );
+    expect(created).toEqual([{ id: 6, stage_id: [1, "New"], expected_revenue: 3000 }]);
+});
+

@@ -86,6 +86,19 @@ export class CrmTeam extends models.Model {
     }
 }
 
+export class CrmTag extends models.Model {
+    _name = "crm.tag";
+
+    name = fields.Char();
+    color = fields.Integer();
+
+    _records = [
+        { id: 1, name: "Furniture", color: 1 },
+        { id: 2, name: "Priority customer", color: 2 },
+        { id: 3, name: "Renewal", color: 3 },
+    ];
+}
+
 export class CrmLead extends models.Model {
     _name = "crm.lead";
 
@@ -101,6 +114,7 @@ export class CrmLead extends models.Model {
     team_id = fields.Many2one({ relation: "crm.team" });
     user_id = fields.Many2one({ relation: "res.users" });
     partner_id = fields.Many2one({ relation: "res.partner" });
+    tag_ids = fields.Many2many({ relation: "crm.tag" });
     contact_name = fields.Char();
     email_from = fields.Char();
     phone = fields.Char();
@@ -218,4 +232,4 @@ export class CrmLead extends models.Model {
     ];
 }
 
-export const crmOfflineModels = [CrmStage, CrmTeam, CrmLead];
+export const crmOfflineModels = [CrmStage, CrmTeam, CrmTag, CrmLead];

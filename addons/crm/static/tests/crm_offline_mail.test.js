@@ -20,6 +20,7 @@ import { serializeDate, today } from "@web/core/l10n/dates";
 import {
     CrmLead,
     CrmStage,
+    CrmTag,
     CrmTeam,
     mockCrmOffline,
 } from "@crm/../tests/mock_server/crm_offline_test_helpers";
@@ -43,7 +44,7 @@ class Lead extends CrmLead {
     }
 }
 
-defineModels([CrmStage, CrmTeam, Lead]);
+defineModels([CrmStage, CrmTeam, CrmTag, Lead]);
 defineMailModels();
 defineActions([
     {

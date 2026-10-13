@@ -485,7 +485,6 @@ test("[Online] the lead stage bar keeps the layout of mail's stage bar", async (
     });
 });
 
-test.tags("desktop");
 test("[Offline] a lead never opened online shows the offline action helper, then opens once online", async () => {
     CrmLead._views = {
         kanban: `
@@ -507,6 +506,9 @@ test("[Offline] a lead never opened online shows the offline action helper, then
     expect(".o_form_view .o_form_renderer").toHaveCount(0);
     expect(".o_kanban_view").toHaveCount(0);
     expect(".o_breadcrumb .active").toHaveText("Not available offline");
+    // nothing to save or act on: no save / discard, no action menu
+    expect(".o_form_status_indicator").toHaveCount(0);
+    expect(".o_cp_action_menus").toHaveCount(0);
 
     await setOffline(false);
     await expect.waitForSteps(["crm.lead/web_read"]);
@@ -514,4 +516,50 @@ test("[Offline] a lead never opened online shows the offline action helper, then
     expect(".o_crm_offline_form_helper").toHaveCount(0);
     expect(".o_field_widget[name=name] input").toHaveValue("Desks for the new office");
     expect(".o_breadcrumb .active").toHaveText("Desks for the new office");
+    expect(".o_form_status_indicator").toHaveCount(1);
+    expect(".o_cp_action_menus").toHaveCount(1);
+});
+
+test("[Offline] the pager skips the leads never opened online", async () => {
+    CrmLead._views = {
+        list: `<list><field name="name"/></list>`,
+        form: wonForm,
+        search: `<search/>`,
+    };
+    defineActions([
+        {
+            id: 2,
+            name: "Leads",
+            res_model: "crm.lead",
+            views: [
+                [false, "list"],
+                [false, "form"],
+            ],
+            search_view_id: [false, "search"],
+        },
+    ]);
+    const setOffline = mockCrmOffline(["crm.lead/web_read"]);
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(2);
+    // "Meeting room" (3), then "Office chairs" (1), opened online; "Desks..." (2) never
+    await contains(".o_data_row .o_data_cell:contains(Meeting room)").click();
+    await contains(".o_back_button").click();
+    await contains(".o_data_row .o_data_cell:contains(Office chairs)").click();
+    expect.verifySteps(["crm.lead/web_read", "crm.lead/web_read"]);
+    const isSmall = getService("ui").isSmall; // small screens show no record count
+    if (!isSmall) {
+        expect(".o_pager_limit").toHaveText("4");
+    }
+
+    await setOffline(true);
+    // the framework's pager only steps through the leads available offline
+    if (!isSmall) {
+        expect(".o_pager_limit").toHaveText("2");
+    }
+    await contains(".o_pager_next").click();
+    expect(".o_field_widget[name=name] input").toHaveValue("Meeting room");
+    expect(".o_crm_offline_form_helper").toHaveCount(0);
+    // (the cached lead is still refreshed from the network in the background: that fails)
+    expect.verifySteps(["crm.lead/web_read"]);
+    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\/crm.lead\/web_read"/]);
 });

@@ -6,6 +6,7 @@ import {
     defineActions,
     defineModels,
     getService,
+    MockServer,
     mountView,
     mountWithCleanup,
     onRpc,
@@ -18,6 +19,7 @@ import { ShareTargetDialog } from "@web/webclient/share_target/share_target_dial
 import {
     CrmLead,
     CrmStage,
+    CrmTag,
     CrmTeam,
     mockCrmOffline,
     queuedCalls,
@@ -71,7 +73,7 @@ class Team extends CrmTeam {
     };
 }
 
-defineModels([Stage, Team, Lead]);
+defineModels([Stage, Team, CrmTag, Lead]);
 defineMailModels();
 defineActions([
     {
@@ -448,3 +450,35 @@ test("[Offline] stage form cog menu: Delete can't be run offline", async () => {
     await toggleActionMenu();
     expect(".o-dropdown--menu .o_menu_item:contains(Delete)").not.toHaveClass("pe-none");
 });
+
+for (const { model, actionId, row, resId, newName } of [
+    { model: "crm.stage", actionId: 5, row: "Proposition", resId: 2, newName: "Proposal sent" },
+    { model: "crm.team", actionId: 6, row: "Pre-Sales", resId: 2, newName: "Inside Sales" },
+]) {
+    test(`[Offline] a ${model} form save is queued and replayed`, async () => {
+        onRpc(model, "web_save", ({ args }) => {
+            expect.step(`server: web_save ${JSON.stringify(args)}`);
+        });
+        const setOffline = mockCrmOffline();
+        await mountWithCleanup(WebClient);
+        // the list and the form, visited online
+        await getService("action").doAction(actionId);
+        await contains(`.o_data_row .o_data_cell[name=name]:contains(${row})`).click();
+        await runAllTimers();
+
+        await setOffline(true);
+        await contains(".o_field_widget[name=name] input").edit(newName);
+        await contains(".o_form_button_save").click();
+        await animationFrame();
+        expect.verifySteps([]);
+        expect(queuedCalls().map((call) => [call.model, call.method, call.args])).toEqual([
+            [model, "web_save", [[resId], { name: newName }]],
+        ]);
+
+        await setOffline(false);
+        await expect.waitForSteps([`server: web_save [[${resId}],{"name":"${newName}"}]`]);
+        expect(queuedCalls()).toEqual([]);
+        expect(MockServer.env[model].browse(resId)[0].name).toBe(newName);
+    });
+}
+

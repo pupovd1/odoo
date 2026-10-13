@@ -8,6 +8,19 @@
         <xpath expr="//t[@t-component='this.props.Renderer'][@archInfo='this.archInfo']" position="after">
             <CrmOfflineFormHelper t-else=""/>
         </xpath>
+        <!-- the placeholder of a lead not available offline: no smart buttons, actions or save -->
+        <xpath expr="//t[@t-if='!this.ui.isSmall and this.buttonBoxTemplate']" position="attributes">
+            <attribute name="t-if">!this.ui.isSmall and this.buttonBoxTemplate and !this.model.unavailableResId</attribute>
+        </xpath>
+        <xpath expr="//t[@t-if='this.ui.isSmall and this.buttonBoxTemplate']" position="attributes">
+            <attribute name="t-if">this.ui.isSmall and this.buttonBoxTemplate and !this.model.unavailableResId</attribute>
+        </xpath>
+        <xpath expr="//CogMenu" position="attributes">
+            <attribute name="t-if">!this.model.unavailableResId</attribute>
+        </xpath>
+        <xpath expr="//FormStatusIndicator" position="attributes">
+            <attribute name="t-if">!this.model.unavailableResId</attribute>
+        </xpath>
     </t>
 
     <t t-name="crm.OfflineFormHelper">
