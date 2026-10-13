@@ -1,6 +1,11 @@
 import { checkRainbowmanMessage } from "@crm/views/check_rainbowman_message";
+import { useOnChange } from "@odoo/owl";
+import { _t } from "@web/core/l10n/translation";
+import { ConnectionLostError } from "@web/core/network/rpc";
 import { registry } from "@web/core/registry";
+import { getScheduleORMExtras } from "@web/model/relational_model/utils";
 import { formView } from "@web/views/form/form_view";
+import { OfflineActionHelper } from "@web/views/offline_action_helper";
 
 class CrmFormRecord extends formView.Model.Record {
      /**
@@ -19,11 +24,12 @@ class CrmFormRecord extends formView.Model.Record {
      * whenever we need to synch.
      *
      * Offline, the save is queued with the same force-saved values. Onchanges
-     * don't run offline though: once the partner itself was changed offline, the
-     * flags still describe the previous partner, so nothing is force-saved and
-     * the server computes the email and phone from the new partner at replay, as
-     * the online onchange does. The rainbowman lookup is skipped offline: it
-     * would fail, and a queued one would show detached from the stage change.
+     * don't run offline though: once the partner was changed without its
+     * onchange, the flags describe the previous partner (see _getOnchangeValues),
+     * so nothing is force-saved and the server computes the email and phone from
+     * the new partner, as the onchange would have. The rainbowman lookup is
+     * skipped offline: it would fail, and a queued one would show detached from
+     * the stage change.
      *
      * @override
      */
@@ -42,10 +48,7 @@ class CrmFormRecord extends formView.Model.Record {
                 ? this._values.partner_phone_update // original value
                 : this._changes.partner_phone_update; // new value
 
-        const partnerChangedOffline =
-            this.model.offlinePlugin.isOffline() &&
-            ("partner_id" in this._changes || "partner_id" in (this._offlineChanges || {}));
-        if (!partnerChangedOffline) {
+        if (!this._partnerSyncFlagsStale) {
             if (needsSynchronizationEmail && this._changes.email_from === undefined && this._values.email_from) {
                 this._changes.email_from = this._values.email_from;
             }
@@ -64,6 +67,73 @@ class CrmFormRecord extends formView.Model.Record {
         }
         return res;
     }
+
+    /**
+     * Onchanges fail offline (the framework applies the change without them). If
+     * the partner changes without its onchange, the partner sync flags keep the
+     * previous partner's values until an onchange runs again or the record is
+     * reloaded.
+     *
+     * @override
+     */
+    async _getOnchangeValues(changes) {
+        const values = await super._getOnchangeValues(...arguments);
+        if (values === undefined) {
+            if ("partner_id" in changes) {
+                this._partnerSyncFlagsStale = true;
+            }
+        } else if (Object.keys(changes).some((fieldName) => this.activeFields[fieldName]?.onChange)) {
+            this._partnerSyncFlagsStale = false; // an onchange ran: the server's flags
+        }
+        return values;
+    }
+
+    /** @override */
+    _setData() {
+        this._partnerSyncFlagsStale = false;
+        return super._setData(...arguments);
+    }
+
+    /**
+     * Mark won, offline: queue the server method (it picks the won stage of the
+     * lead's team at replay) and show the lead as won at once. No rainbowman: it
+     * would show detached from the action once replayed.
+     */
+    markWonOffline() {
+        this._scheduleOffline("action_set_won");
+        this._applyLocalValues({ won_status: "won", probability: 100, active: true });
+    }
+
+    /**
+     * Restore a lost lead, offline: queue the server method and show the lead as
+     * not lost at once (its probability goes back to the automated one).
+     */
+    restoreOffline() {
+        this._scheduleOffline("action_restore");
+        this._applyLocalValues({
+            won_status: "pending",
+            active: true,
+            lost_reason_id: false,
+            probability: this.data.automated_probability,
+        });
+    }
+
+    /** Show values the queued call will give the lead, for the fields of this form. */
+    _applyLocalValues(values) {
+        this._applyValues(
+            Object.fromEntries(
+                Object.entries(values).filter(
+                    ([fieldName, value]) => fieldName in this.activeFields && value !== undefined
+                )
+            )
+        );
+    }
+
+    _scheduleOffline(method) {
+        this.model.offlinePlugin.scheduleORM(this.resModel, method, [[this.resId]], {}, {
+            extras: getScheduleORMExtras(this.model, [this]),
+        });
+    }
 }
 
 class CrmFormModel extends formView.Model {
@@ -74,9 +144,99 @@ class CrmFormModel extends formView.Model {
         super.setup(...arguments);
         this.effect = services.effect;
     }
+
+    /**
+     * A lead never loaded online can't be opened offline: instead of failing to
+     * open (the framework leaves the form unmounted), keep an empty placeholder
+     * record so that the form shows the offline action helper.
+     *
+     * @override
+     */
+    async load(params) {
+        try {
+            return await super.load(...arguments);
+        } catch (error) {
+            if (error instanceof ConnectionLostError && this.couldNotLoadRootOffline && !this.root) {
+                this.unavailableResId = this.config.resId;
+                this.root = this._createRoot({ ...this.config, resId: false }, {});
+                await this.hooks.onRootLoaded(this.root);
+                return;
+            }
+            throw error;
+        }
+    }
+}
+
+/**
+ * The framework's offline action helper, for one lead: no "Reset Filters" (a
+ * form has none to reset).
+ */
+export class CrmOfflineFormHelper extends OfflineActionHelper {
+    static template = "crm.OfflineFormHelper";
+}
+
+/** Server buttons of the lead form that crm queues offline, and how. */
+const OFFLINE_BUTTONS = {
+    action_set_won_rainbowman: "markWonOffline",
+    action_restore: "restoreOffline",
+};
+
+export class CrmFormController extends formView.Controller {
+    static template = "crm.FormView";
+    static components = { ...formView.Controller.components, CrmOfflineFormHelper };
+
+    setup() {
+        super.setup();
+        // a lead not available offline opens once the connection is back
+        useOnChange(
+            () => [this.offlinePlugin.isOffline()],
+            (isOffline) => {
+                if (!isOffline && this.model.unavailableResId) {
+                    const resId = this.model.unavailableResId;
+                    this.model.unavailableResId = false;
+                    this.model.load({ resId });
+                }
+            },
+            { initialRun: false }
+        );
+    }
+
+    displayName() {
+        if (this.model.couldNotLoadRootOffline && this.model.unavailableResId) {
+            return _t("Not available offline");
+        }
+        return super.displayName();
+    }
+
+    /**
+     * Offline, Won and Restore don't reach the server (the framework would save,
+     * then drop the button's call): the record saves (queued), then crm queues the
+     * button's method and shows its result. A lead created offline has no id yet:
+     * its Won button isn't available offline (see the lead form).
+     *
+     * @override
+     */
+    async beforeExecuteActionButton(clickParams) {
+        const record = this.model.root;
+        const offlineMethod = OFFLINE_BUTTONS[clickParams.name];
+        if (
+            !this.offlinePlugin.isOffline() ||
+            clickParams.type !== "object" ||
+            !offlineMethod ||
+            record.resModel !== "crm.lead"
+        ) {
+            return super.beforeExecuteActionButton(...arguments);
+        }
+        if ((await record.save()) === false || !record.resId) {
+            return false;
+        }
+        record[offlineMethod]();
+        return false;
+    }
 }
 
 registry.category("views").add("crm_form", {
     ...formView,
+    Controller: CrmFormController,
     Model: CrmFormModel,
 });

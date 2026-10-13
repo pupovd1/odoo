@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="crm.OfflineActivities">
+        <div t-if="this.isShown" class="o_crm_offline_activities card my-3">
+            <div class="card-header d-flex align-items-center gap-2">
+                <i class="oi" data-icon="link_off" role="img"/>
+                <span class="fw-bold">Activities</span>
+                <span class="text-muted small">offline: synced once the connection is back</span>
+            </div>
+            <ul class="list-group list-group-flush">
+                <li t-foreach="this.state.activities" t-as="activity" t-key="activity.id"
+                    class="o_crm_offline_activity list-group-item d-flex align-items-center gap-2"
+                    t-att-data-activity-id="activity.id">
+                    <div class="flex-grow-1 text-truncate">
+                        <span class="fw-bold" t-out="activity.activity_type_id[1]"/>
+                        <span t-if="activity.summary">: <t t-out="activity.summary"/></span>
+                        <div class="small text-muted">
+                            <t t-out="activity.date_deadline"/>
+                            <t t-if="activity.user_id"> · <t t-out="activity.user_id[1]"/></t>
+                        </div>
+                    </div>
+                    <t t-if="this.pendingDoneIds.has(activity.id)">
+                        <span class="o_crm_pending_sync badge text-bg-warning">Done · Pending sync</span>
+                    </t>
+                    <button t-elif="activity.can_write" class="btn btn-secondary o_crm_offline_mark_done"
+                        data-available-offline="" t-on-click="() => this.markDone(activity)">
+                        Mark done
+                    </button>
+                </li>
+                <li t-foreach="this.pendingActivities" t-as="pending" t-key="pending.key"
+                    class="o_crm_offline_pending_activity list-group-item d-flex align-items-center gap-2">
+                    <div class="flex-grow-1 text-truncate">
+                        <span class="fw-bold" t-out="pending.typeName"/>
+                        <span t-if="pending.summary">: <t t-out="pending.summary"/></span>
+                        <div class="small text-muted" t-out="pending.deadline"/>
+                    </div>
+                    <span class="o_crm_pending_sync badge text-bg-warning">Pending sync</span>
+                </li>
+                <li t-foreach="this.pendingCalls" t-as="pending" t-key="pending.key"
+                    class="o_crm_offline_pending_call list-group-item d-flex align-items-center gap-2">
+                    <div class="flex-grow-1 text-truncate">
+                        <span class="fw-bold">Call logged</span>
+                        <span t-if="pending.summary">: <t t-out="pending.summary"/></span>
+                    </div>
+                    <span class="o_crm_pending_sync badge text-bg-warning">Pending sync</span>
+                </li>
+                <li t-if="!this.state.activities.length and !this.pendingActivities.length and !this.pendingCalls.length"
+                    class="list-group-item text-muted">
+                    No activity cached for this lead.
+                </li>
+            </ul>
+            <div class="card-body d-flex flex-column gap-2">
+                <div t-if="this.state.activityTypes.length" class="o_crm_offline_schedule d-flex flex-wrap gap-2">
+                    <select class="form-select w-auto o_crm_offline_activity_type" aria-label="Activity type"
+                        t-on-change="(ev) => this.onTypeChange(ev)">
+                        <option t-foreach="this.state.activityTypes" t-as="type" t-key="type.id"
+                            t-att-value="type.id" t-att-selected="type.id === this.state.typeId" t-out="type.name"/>
+                    </select>
+                    <input type="text" class="form-control w-auto flex-grow-1 o_crm_offline_activity_summary"
+                        placeholder="Summary" aria-label="Summary" t-att-value="this.state.summary"
+                        t-on-input="(ev) => this.state.summary = ev.target.value"/>
+                    <input type="date" class="form-control w-auto o_crm_offline_activity_deadline"
+                        aria-label="Due date" t-att-value="this.state.deadline"
+                        t-on-change="(ev) => this.state.deadline = ev.target.value"/>
+                    <select class="form-select w-auto o_crm_offline_activity_assignee" aria-label="Assigned to"
+                        t-on-change="(ev) => this.onAssigneeChange(ev)">
+                        <option t-foreach="this.assignees" t-as="assignee" t-key="assignee.id"
+                            t-att-value="assignee.id" t-att-selected="assignee.id === this.state.assigneeId" t-out="assignee.name"/>
+                    </select>
+                    <button class="btn btn-primary o_crm_offline_schedule_button" data-available-offline=""
+                        t-att-disabled="!this.canSchedule" t-on-click="() => this.schedule()">
+                        Schedule
+                    </button>
+                </div>
+                <div t-else="" class="o_crm_offline_schedule_unavailable d-flex align-items-center gap-2">
+                    <button class="btn btn-primary o_crm_offline_schedule_button" disabled="">Schedule</button>
+                    <span class="text-muted small">No activity type was loaded online: scheduling is unavailable offline.</span>
+                </div>
+                <div class="o_crm_offline_log_call d-flex flex-wrap gap-2">
+                    <input type="text" class="form-control w-auto flex-grow-1 o_crm_offline_call_summary"
+                        placeholder="Call summary" aria-label="Call summary" t-att-value="this.state.callSummary"
+                        t-on-input="(ev) => this.state.callSummary = ev.target.value"/>
+                    <button class="btn btn-secondary o_crm_offline_log_call_button" data-available-offline=""
+                        t-on-click="() => this.logCall()">
+                        Log a call
+                    </button>
+                </div>
+            </div>
+        </div>
+    </t>
+
+</templates>

@@ -58,6 +58,7 @@ export class CrmShareTargetItem extends ShareTargetItem {
     onCompanyChange(companyId) {
         super.onCompanyChange(companyId);
         this.teamsDomain = [["company_id", "in", [this.currentCompany.id, false]]];
+        this.teamsLoaded = false; // read for the new company, now or once back online
         this.updateTeams();
     }
 

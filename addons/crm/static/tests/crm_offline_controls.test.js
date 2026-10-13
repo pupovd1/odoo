@@ -6,6 +6,7 @@ import {
     defineActions,
     defineModels,
     getService,
+    mountView,
     mountWithCleanup,
     onRpc,
     patchWithCleanup,
@@ -180,10 +181,8 @@ test("[Offline] team switcher: no group probe, dropdown disabled, Manage Teams u
     expect(probes.count).toBe(0);
     // the teams come from the cache: the framework's refresh fails in the background
     expect.verifySteps(["crm.team/get_team_switcher_data"]);
-    await expect.waitForErrors([
-        `Connection to "/web/dataset/call_kw/crm.team/get_team_switcher_data"`,
-        `Connection to "/web/dataset/call_kw/crm.lead/web_read_group"`,
-    ]);
+    // (get_team_switcher_data and web_read_group, in either order)
+    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\//, /Connection to "\/web\/dataset\/call_kw\//]);
 
     // back online: probed, enabled, Manage Teams reachable again
     await setOffline(false);
@@ -207,6 +206,13 @@ test("[Offline] lead generation: Generate is disabled offline, with no module lo
     await getService("action").doAction(1);
     const generate = "button:contains(Generate)";
     expect(generate).toBeEnabled();
+    if (!getService("ui").isSmall) {
+        // opened online, the dropdown closes when the connection drops
+        await contains(generate).click();
+        await expect.waitForSteps(["ir.module.module/search_read"]);
+        await animationFrame();
+        expect(".o_lead_mining_menu_choices").toHaveCount(1);
+    }
 
     await setOffline(true);
     expect(generate).not.toBeEnabled();
@@ -221,10 +227,11 @@ test("[Offline] lead generation: Generate is disabled offline, with no module lo
     // a programmatic click: on small screens the button sits in the control panel's
     // "More" menu
     queryFirst(generate).click();
-    await expect.waitForSteps(["ir.module.module/search_read"]);
     await animationFrame();
-    if (!getService("ui").isSmall) {
-        // (small screens open it from the "More" menu)
+    if (getService("ui").isSmall) {
+        await expect.waitForSteps(["ir.module.module/search_read"]);
+    } else {
+        // (the modules were already looked up when it was first opened)
         expect(".o_lead_mining_menu_choices").toHaveCount(1);
     }
 });
@@ -390,4 +397,54 @@ test("[Offline] Share to Lead is disabled offline and reads no teams", async () 
     await runAllTimers();
     expect.verifySteps(["crm.team/web_search_read"]);
     expect(".o_dialog .modal-footer .btn-primary").toBeEnabled();
+});
+
+const cogForm = `<form js_class="crm_form"><field name="name"/><field name="active" invisible="1"/></form>`;
+
+/** Opens the cog menu of the form and tries to run `itemName` from the keyboard and by program. */
+async function tryCogMenuItem(itemName) {
+    await toggleActionMenu();
+    const item = `.o-dropdown--menu .o_menu_item:contains(${itemName})`;
+    expect(item).toHaveClass("pe-none");
+    queryFirst(item).focus();
+    await press("Enter");
+    queryFirst(item)?.click();
+    await animationFrame();
+}
+
+test("[Offline] lead form cog menu: Duplicate can't be run offline, Delete still can", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/copy", "crm.lead/web_unlink"]);
+    await mountView({ type: "form", resModel: "crm.lead", resId: 1, arch: cogForm, actionMenus: {} });
+    await setOffline(true);
+    await tryCogMenuItem("Duplicate");
+    expect(".modal").toHaveCount(0);
+    expect.verifySteps([]);
+    expect(queuedCalls()).toEqual([]);
+    // Delete is queued by the framework (QUEUE): available offline on a lead
+    await toggleActionMenu();
+    expect(".o-dropdown--menu .o_menu_item:contains(Delete)").not.toHaveClass("pe-none");
+});
+
+test("[Offline] unsaved lead cog menu: the framework greys every item, crm makes them inert", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/action_archive"]);
+    await mountView({ type: "form", resModel: "crm.lead", arch: cogForm, actionMenus: {} });
+    await setOffline(true);
+    await tryCogMenuItem("Archive");
+    expect(".modal").toHaveCount(0);
+    expect.verifySteps([]);
+    expect(queuedCalls()).toEqual([]);
+});
+
+test("[Offline] stage form cog menu: Delete can't be run offline", async () => {
+    const setOffline = mockCrmOffline(["crm.stage/web_unlink", "crm.stage/unlink"]);
+    await mountView({ type: "form", resModel: "crm.stage", resId: 1, actionMenus: {} });
+    await setOffline(true);
+    await tryCogMenuItem("Delete");
+    expect(".modal").toHaveCount(0);
+    expect.verifySteps([]);
+    expect(queuedCalls()).toEqual([]);
+
+    await setOffline(false);
+    await toggleActionMenu();
+    expect(".o-dropdown--menu .o_menu_item:contains(Delete)").not.toHaveClass("pe-none");
 });

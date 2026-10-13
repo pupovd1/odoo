@@ -3,6 +3,7 @@ import { expect, test } from "@odoo/hoot";
 import { animationFrame, click, queryFirst, runAllTimers } from "@odoo/hoot-dom";
 import {
     contains,
+    defineActions,
     defineModels,
     editSelectMenu,
     getService,
@@ -33,6 +34,35 @@ onRpc("crm.lead", "prepare_pls_tooltip_data", () => ({
     low_3_data: {},
 }));
 onRpc("crm.lead", "action_set_automated_probability", () => false);
+onRpc("crm.lead", "action_set_won", function ({ args }) {
+    this.env["crm.lead"].write(args[0], { stage_id: 3, won_status: "won", probability: 100 });
+    return true;
+});
+onRpc("crm.lead", "action_set_won_rainbowman", function ({ args }) {
+    this.env["crm.lead"].write(args[0], { stage_id: 3, won_status: "won", probability: 100 });
+    // as call_button cleans it: a closing action carrying the effect
+    return {
+        type: "ir.actions.act_window_close",
+        effect: { message: "Go, go, go! Congrats for your first deal.", type: "rainbow_man" },
+    };
+});
+onRpc("crm.lead", "action_restore", function ({ args }) {
+    this.env["crm.lead"].write(args[0], { active: true, won_status: "pending", probability: 30 });
+    return true;
+});
+
+defineActions([
+    {
+        id: 1,
+        name: "Pipeline",
+        res_model: "crm.lead",
+        type: "ir.actions.act_window",
+        views: [
+            [false, "kanban"],
+            [false, "form"],
+        ],
+    },
+]);
 
 const stageForm = `
     <form js_class="crm_form">
@@ -163,6 +193,40 @@ test("[Offline] after a partner change offline, the stale sync flags force-save 
         [1],
         { partner_id: desksId, name: "Office chairs (x12)" },
     ]);
+
+    // back online, the queued write replays; the form isn't reloaded, so its flags are
+    // still stale: the next online save doesn't force-save them either
+    onRpc("crm.lead", "web_save", ({ args }) => {
+        expect.step(`server: ${Object.keys(args[1]).sort().join(",")}`);
+    });
+    await setOffline(false);
+    await expect.waitForSteps(["crm.lead/web_save", "server: name,partner_id"]);
+    await contains(".o_field_widget[name=name] input").edit("Office chairs (x14)");
+    await contains(".o_form_button_save").click();
+    await expect.waitForSteps(["crm.lead/web_save", "server: name"]);
+});
+
+test.tags("desktop");
+test("[Offline] after a partner change made online, an offline save keeps the force-saved values", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/web_save"]);
+    CrmLead._views = { form: stageForm, search: `<search/>` };
+    const desksId = await openLeadWithCachedContacts();
+
+    // online: the onchange runs and refreshes the sync flags (Desks has no phone)
+    await contains(".o_field_widget[name=partner_id] input").edit("Desks", { confirm: false });
+    await runAllTimers();
+    await contains(".dropdown .dropdown-item:contains(Desks Contact)").click();
+    expect(".o_field_widget[name=email_from] input").toHaveValue("buyer@desks.example");
+
+    // the connection drops before the save: the copy follows the fresh flags
+    await setOffline(true);
+    await contains(".o_form_button_save").click();
+    await animationFrame();
+    expect.verifySteps(["crm.lead/web_save"]);
+    expect(queuedCalls()[0].args).toEqual([
+        [1],
+        { partner_id: desksId, email_from: "buyer@desks.example", phone: "+32 470 11 11 11" },
+    ]);
 });
 
 test.tags("desktop");
@@ -201,8 +265,13 @@ test("[Offline] the predictive-scoring tooltip button is disabled offline, with 
     ]);
     await mountView({ type: "form", resModel: "crm.lead", resId: 1, arch: plsForm });
     expect(".o_crm_pls_tooltip_button").toBeEnabled();
+    // opened online, the tooltip closes when the connection drops
+    await contains(".o_crm_pls_tooltip_button").click();
+    await expect.waitForSteps(["crm.lead/prepare_pls_tooltip_data"]);
+    expect(".o_crm_pls_tooltip").toHaveCount(1);
 
     await setOffline(true);
+    expect(".o_crm_pls_tooltip").toHaveCount(0);
     expect(".o_crm_pls_tooltip_button").not.toBeEnabled();
     // even a programmatic click doesn't reach the server
     queryFirst(".o_crm_pls_tooltip_button").dispatchEvent(new MouseEvent("click", { bubbles: true }));
@@ -281,4 +350,168 @@ test("[Offline] lead form buttons that need the server are disabled offline, ena
     for (const name of names) {
         expect(`button[name='${name}']`).toBeEnabled();
     }
+});
+
+const wonForm = `
+    <form js_class="crm_form">
+        <header>
+            <button name="action_set_won_rainbowman" string="Won" type="object" data-available-offline="1"
+                invisible="won_status == 'won' or type == 'lead' or not active or not id"/>
+            <button name="action_set_won_rainbowman" string="Won" type="object"
+                invisible="won_status == 'won' or type == 'lead' or not active or id"/>
+            <button name="action_restore" string="Restore" type="object" data-available-offline="1"
+                invisible="won_status != 'lost'"/>
+            <field name="stage_id" widget="crm_statusbar" options="{'clickable': '1'}"/>
+        </header>
+        <sheet>
+            <widget name="web_ribbon" title="Won" invisible="won_status != 'won'"/>
+            <widget name="web_ribbon" title="Lost" bg_color="text-bg-danger" invisible="won_status != 'lost'"/>
+            <field name="name"/>
+            <field name="probability"/>
+            <field name="automated_probability" invisible="1"/>
+            <field name="won_status" invisible="1"/>
+            <field name="active" invisible="1"/>
+            <field name="type" invisible="1"/>
+        </sheet>
+    </form>`;
+
+test("[Offline] mark won queues action_set_won and shows the lead as won at once, without the rainbowman", async () => {
+    const setOffline = mockCrmOffline([
+        "crm.lead/action_set_won",
+        "crm.lead/action_set_won_rainbowman",
+        "crm.lead/get_rainbowman_message",
+    ]);
+    await mountView({ type: "form", resModel: "crm.lead", resId: 3, arch: wonForm });
+    expect(".ribbon:contains(Won)").toHaveCount(0);
+
+    await setOffline(true);
+    expect("button[name=action_set_won_rainbowman]").toBeEnabled();
+    await contains("button[name=action_set_won_rainbowman]").click();
+    // won at once; the button's server call and the rainbowman are never attempted
+    expect(".ribbon:contains(Won)").toHaveCount(1);
+    expect("button[name=action_set_won_rainbowman]").toHaveCount(0);
+    expect(".o_field_widget[name=probability] input").toHaveValue("100.00");
+    expect.verifySteps([]);
+    expect(queuedMethods()).toEqual(["crm.lead.action_set_won"]);
+    expect(queuedCalls()[0].args).toEqual([[3]]);
+    expect(".o_reward").toHaveCount(0);
+
+    await setOffline(false);
+    await expect.waitForSteps(["crm.lead/action_set_won"]);
+    expect(queuedCalls()).toEqual([]);
+    expect(MockServer.env["crm.lead"].browse(3)[0].won_status).toBe("won");
+    expect(".o_reward").toHaveCount(0);
+});
+
+test("[Online] mark won still calls the server button and shows the rainbowman", async () => {
+    mockCrmOffline(["crm.lead/action_set_won", "crm.lead/action_set_won_rainbowman"]);
+    await mountView({ type: "form", resModel: "crm.lead", resId: 3, arch: wonForm });
+    await contains("button[name=action_set_won_rainbowman]").click();
+    await expect.waitForSteps(["crm.lead/action_set_won_rainbowman"]);
+    await animationFrame();
+    expect(".o_reward").toHaveCount(1);
+    expect(".ribbon:contains(Won)").toHaveCount(1);
+    expect(queuedCalls()).toEqual([]);
+});
+
+test("[Offline] a lead created offline (no id yet) can't be marked won offline", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/action_set_won", "crm.lead/action_set_won_rainbowman"]);
+    await mountView({ type: "form", resModel: "crm.lead", arch: wonForm });
+    await setOffline(true);
+    await contains(".o_field_widget[name=name] input").edit("Created offline");
+    // the Won button of a record without id carries no offline attribute: disabled
+    expect("button[name=action_set_won_rainbowman]").toHaveCount(1);
+    expect("button[name=action_set_won_rainbowman]").not.toBeEnabled();
+    await contains(".o_form_button_save").click();
+    expect("button[name=action_set_won_rainbowman]").not.toBeEnabled();
+    expect.verifySteps([]);
+    expect(queuedMethods()).toEqual(["crm.lead.web_save"]);
+});
+
+test("[Offline] restore a lost lead: action_restore queued, shown as not lost at once", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/action_restore"]);
+    await mountView({ type: "form", resModel: "crm.lead", resId: 5, arch: wonForm });
+    expect(".ribbon:contains(Lost)").toHaveCount(1);
+
+    await setOffline(true);
+    expect("button[name=action_restore]").toBeEnabled();
+    await contains("button[name=action_restore]").click();
+    expect(".ribbon:contains(Lost)").toHaveCount(0);
+    expect("button[name=action_restore]").toHaveCount(0);
+    expect(".o_field_widget[name=probability] input").toHaveValue("30.00");
+    expect.verifySteps([]);
+    expect(queuedMethods()).toEqual(["crm.lead.action_restore"]);
+    expect(queuedCalls()[0].args).toEqual([[5]]);
+
+    await setOffline(false);
+    await expect.waitForSteps(["crm.lead/action_restore"]);
+    expect(queuedCalls()).toEqual([]);
+    expect(MockServer.env["crm.lead"].browse(5)[0].active).toBe(true);
+});
+
+test("[Offline] a stage move from the stage bar is saved offline (queued web_save)", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/web_save"]);
+    await mountView({ type: "form", resModel: "crm.lead", resId: 1, arch: wonForm });
+
+    await setOffline(true);
+    if (getService("ui").isSmall) {
+        // small screens show the stages in a dropdown, whose toggler is available offline
+        expect(".o_statusbar_status button.dropdown-toggle:not(.d-none)").toBeEnabled();
+        await contains(".o_statusbar_status button.dropdown-toggle").click();
+        await contains(".o-dropdown--menu .dropdown-item:contains(Proposition)").click();
+    } else {
+        expect(".o_statusbar_status button[data-value='2']").toBeEnabled();
+        await click(".o_statusbar_status button[data-value='2']");
+        await animationFrame();
+    }
+    await contains(".o_form_button_save").click();
+    expect.verifySteps(["crm.lead/web_save"]);
+    expect(queuedMethods()).toEqual(["crm.lead.web_save"]);
+    expect(queuedCalls()[0].args[0]).toEqual([1]);
+    expect(queuedCalls()[0].args[1].stage_id).toBe(2);
+
+    await setOffline(false);
+    await expect.waitForSteps(["crm.lead/web_save"]);
+    expect(MockServer.env["crm.lead"].browse(1)[0].stage_id).toBe(2);
+});
+
+test("[Online] the lead stage bar keeps the layout of mail's stage bar", async () => {
+    await mountView({ type: "form", resModel: "crm.lead", resId: 1, arch: wonForm });
+    // mail's stage bar styles are keyed on its field class: without them the stages
+    // wrap, and the stage bar folds some of them away
+    expect(".o_field_widget[name=stage_id]").toHaveClass("o_field_rotting_statusbar_duration");
+    expect(".o_field_widget[name=stage_id] > .o_statusbar_status").toHaveStyle({
+        flexDirection: "row-reverse",
+    });
+});
+
+test.tags("desktop");
+test("[Offline] a lead never opened online shows the offline action helper, then opens once online", async () => {
+    CrmLead._views = {
+        kanban: `
+            <kanban js_class="crm_kanban" default_group_by="stage_id">
+                <templates><t t-name="card"><field name="name"/></t></templates>
+            </kanban>`,
+        form: wonForm,
+        search: `<search/>`,
+    };
+    const setOffline = mockCrmOffline(["crm.lead/web_read"]);
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    await setOffline(true);
+
+    await contains(".o_kanban_record:contains(Desks for the new office)").click();
+    expect.verifySteps(["crm.lead/web_read"]); // tried, nothing cached
+    // the helper, not an empty form nor the pipeline it came from
+    expect(".o_form_view .o_crm_offline_form_helper").toHaveCount(1);
+    expect(".o_form_view .o_form_renderer").toHaveCount(0);
+    expect(".o_kanban_view").toHaveCount(0);
+    expect(".o_breadcrumb .active").toHaveText("Not available offline");
+
+    await setOffline(false);
+    await expect.waitForSteps(["crm.lead/web_read"]);
+    await animationFrame();
+    expect(".o_crm_offline_form_helper").toHaveCount(0);
+    expect(".o_field_widget[name=name] input").toHaveValue("Desks for the new office");
+    expect(".o_breadcrumb .active").toHaveText("Desks for the new office");
 });

@@ -1296,6 +1296,29 @@ class CrmLead(models.Model):
             else:
                 return "month", earliest_start_dt.date()
 
+    def action_log_call(self, summary=False, feedback=False):
+        """ Log a call made on the leads: a Call activity created and marked done
+        at once, which posts the call in their chatter. A single call, so that the
+        client can queue it while offline.
+
+        :param str summary: summary of the call (defaults to the call type's)
+        :param str feedback: notes on the call, posted with it
+        """
+        call_type = self.env.ref('mail.mail_activity_data_call', raise_if_not_found=False) or \
+            self.env['mail.activity.type'].search([('category', '=', 'phonecall')], limit=1)
+        if not call_type:
+            raise UserError(_('Calls can only be logged with a "Call" activity type.'))
+        activities = self.env['mail.activity'].create([{
+            'activity_type_id': call_type.id,
+            'date_deadline': fields.Date.context_today(self),
+            'res_id': lead.id,
+            'res_model_id': self.env['ir.model']._get_id(self._name),
+            'summary': summary or call_type.summary or call_type.name,
+            'user_id': self.env.uid,
+        } for lead in self])
+        activities.action_feedback(feedback=feedback)
+        return True
+
     def action_reschedule_meeting(self):
         self.ensure_one()
         action = self.action_schedule_meeting(smart_calendar=False)

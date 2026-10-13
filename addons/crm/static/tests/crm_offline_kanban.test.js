@@ -1,6 +1,6 @@
 import { defineMailModels } from "@mail/../tests/mail_test_helpers";
 import { beforeEach, expect, test } from "@odoo/hoot";
-import { advanceTime, animationFrame, hover, queryAll, queryFirst, runAllTimers } from "@odoo/hoot-dom";
+import { advanceTime, animationFrame, hover, queryFirst, runAllTimers } from "@odoo/hoot-dom";
 import { mockDate } from "@odoo/hoot-mock";
 import {
     contains,
@@ -36,6 +36,7 @@ const pipelineArch = `
             </t>
             <t t-name="card">
                 <field name="name"/>
+                <field name="is_rotting" invisible="1"/>
             </t>
         </templates>
     </kanban>`;
@@ -115,7 +116,6 @@ test("[Online] dragging a lead to the won stage still looks up the rainbowman", 
     expect(".o_reward").toHaveCount(1);
 });
 
-test.tags("desktop");
 test("[Offline] the recurring-revenue aggregate is not probed offline and is hidden", async () => {
     // opened again offline, the pipeline comes from the framework's cache, which
     // still tries to refresh it from the server in the background
@@ -250,4 +250,26 @@ test("[Offline] forecast: the next-period column is hidden offline, moves betwee
     await expect.waitForSteps([`server: web_save ["date_deadline"]`]);
     expect(queuedCalls()).toEqual([]);
     expect(".o_column_quick_create").toHaveCount(1);
+});
+
+test("[Offline] the rotting badge of a column doesn't filter it offline", async () => {
+    const setOffline = mockCrmOffline(["crm.lead/web_search_read"]);
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    const badge = ".o_kanban_group:eq(0) .o_kanban_counter .badge.text-bg-danger";
+    expect(badge).toHaveCount(1); // "Office chairs" is rotting
+    expect(badge).not.toHaveClass("o_disabled_offline");
+
+    await setOffline(true);
+    expect(badge).toHaveClass(["o_disabled_offline", "pe-none"]);
+    queryFirst(badge).click();
+    await animationFrame();
+    expect.verifySteps([]);
+    expect(".o_kanban_group:eq(0)").not.toHaveClass("o_kanban_group_show_danger");
+
+    await setOffline(false);
+    expect(badge).not.toHaveClass("o_disabled_offline");
+    await contains(badge).click();
+    await expect.waitForSteps(["crm.lead/web_search_read"]);
+    expect(".o_kanban_group:eq(0)").toHaveClass("o_kanban_group_show_danger");
 });

@@ -2,11 +2,13 @@ import {
     click,
     contains,
     defineMailModels,
+    dragenterFiles,
+    dropFiles,
     start,
     startServer,
 } from "@mail/../tests/mail_test_helpers";
 import { expect, test } from "@odoo/hoot";
-import { animationFrame, queryFirst } from "@odoo/hoot-dom";
+import { animationFrame, queryFirst, runAllTimers } from "@odoo/hoot-dom";
 import {
     defineActions,
     defineModels,
@@ -148,10 +150,8 @@ test("[Offline] the lead chatter is read-only offline, with no uncaught error", 
     await openLead();
     await contains(".o_crm_chatter_offline");
     expect(storeCalls).toBe(0);
-    await expect.waitForErrors([
-        `Connection to "/web/dataset/call_kw/crm.lead/web_search_read"`,
-        `Connection to "/web/dataset/call_kw/crm.lead/web_read"`,
-    ]);
+    // (web_search_read and web_read, in either order)
+    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\//, /Connection to "\/web\/dataset\/call_kw\//]);
 
     // back online: the chatter reloads and is usable again
     await setOffline(false);
@@ -161,4 +161,30 @@ test("[Offline] the lead chatter is read-only offline, with no uncaught error", 
     expect(".o-mail-Chatter-sendMessage").toBeEnabled();
     await click(".o-mail-Chatter-logNote");
     await contains(".o-mail-Composer");
+});
+
+test("[Offline] files dropped on the lead chatter aren't uploaded offline", async () => {
+    await startServer();
+    const setOffline = mockCrmOffline();
+    onRpc("/mail/attachment/upload", () => {
+        expect.step("upload");
+    });
+    await start();
+    await openLead();
+    // let the chatter's batched data fetches complete online before the switch
+    await runAllTimers();
+    await animationFrame();
+    const file = new File(["quote"], "quote.txt", { type: "text/plain" });
+
+    await setOffline(true);
+    await dragenterFiles(".o-mail-Chatter", [file]);
+    await dropFiles(".o-Dropzone", [file]);
+    await animationFrame();
+    expect.verifySteps([]);
+    await contains(".o-mail-AttachmentContainer", { count: 0 });
+
+    await setOffline(false);
+    await dragenterFiles(".o-mail-Chatter", [file]);
+    await dropFiles(".o-Dropzone", [file]);
+    await expect.waitForSteps(["upload"]);
 });

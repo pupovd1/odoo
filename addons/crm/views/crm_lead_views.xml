@@ -6,16 +6,21 @@
             <field name="arch" type="xml">
                 <form class="o_lead_opportunity_form" js_class="crm_form">
                     <header>
+                        <!-- Won and Restore are queued offline (crm_form); a lead created offline
+                             has no id yet, so its Won button stays unavailable offline -->
+                        <button name="action_set_won_rainbowman" string="Won"
+                            type="object" class="oe_highlight" data-hotkey="w" data-available-offline="1"
+                            invisible="won_status == 'won' or type == 'lead' or not active or not id"/>
                         <button name="action_set_won_rainbowman" string="Won"
                             type="object" class="oe_highlight" data-hotkey="w"
-                            invisible="won_status == 'won' or type == 'lead' or not active"/>
+                            invisible="won_status == 'won' or type == 'lead' or not active or id"/>
                         <button name="action_convert_to_opportunity" string="Convert to Opportunity" type="object"
                             class="oe_highlight" invisible="type == 'opportunity' or not active" data-hotkey="v"/>
                         <button name="action_restore" string="Restore" type="object" data-hotkey="x"
-                            invisible="won_status != 'lost'"/>
+                            data-available-offline="1" invisible="won_status != 'lost'"/>
                         <button name="%(crm.crm_lead_lost_action)d" string="Lost" type="action" data-hotkey="l"
                             invisible="won_status != 'pending' or not active"/>
-                        <field name="stage_id" widget="rotting_statusbar_duration"
+                        <field name="stage_id" widget="crm_statusbar"
                             options="{'clickable': '1', 'fold_field': 'fold'}"
                             domain="['|', ('team_ids', 'in', team_id), ('team_ids', '=', False)]"
                             invisible="type == 'lead'" readonly="won_status == 'lost' or not active"/>
@@ -248,6 +253,7 @@
                         <div class="d-flex">
                             <field name="lead_properties" nolabel="1" columns="2"/>
                         </div>
+                        <widget name="crm_offline_activities"/>
                         <notebook>
                             <page string="Notes" name="internal_notes">
                                 <field name="description" placeholder="Add a description..." options="{'collaborative': true}" />

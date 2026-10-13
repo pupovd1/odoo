@@ -104,8 +104,9 @@ export class CrmLead extends models.Model {
     contact_name = fields.Char();
     email_from = fields.Char();
     phone = fields.Char();
-    partner_email_update = fields.Boolean();
-    partner_phone_update = fields.Boolean();
+    // computed on the server: readonly, never part of a save
+    partner_email_update = fields.Boolean({ readonly: true });
+    partner_phone_update = fields.Boolean({ readonly: true });
     expected_revenue = fields.Float({ aggregator: "sum" });
     recurring_revenue_monthly = fields.Float({ aggregator: "sum" });
     probability = fields.Float();
@@ -139,6 +140,25 @@ export class CrmLead extends models.Model {
     color = fields.Integer();
     description = fields.Html();
     date_deadline = fields.Date();
+    duration_tracking = fields.Json(); // read by the stage bar (mail's statusbar_duration)
+    is_rotting = fields.Boolean();
+    rotting_days = fields.Integer();
+
+    _onChanges = {
+        // as the server's computes: a partner's email and phone go to the lead, and the
+        // sync flags tell whether the lead's still differ from the partner's
+        partner_id: (record) => {
+            const [partner] = record.partner_id ? this.env["res.partner"].browse(record.partner_id) : [];
+            if (partner?.email) {
+                record.email_from = partner.email;
+            }
+            if (partner?.phone) {
+                record.phone = partner.phone;
+            }
+            record.partner_email_update = Boolean(partner && record.email_from && record.email_from !== partner.email);
+            record.partner_phone_update = Boolean(partner && record.phone && record.phone !== partner.phone);
+        },
+    };
 
     _records = [
         {
@@ -153,6 +173,8 @@ export class CrmLead extends models.Model {
             partner_email_update: true,
             partner_phone_update: true,
             activity_state: "planned",
+            is_rotting: true,
+            rotting_days: 12,
         },
         {
             id: 2,
@@ -181,6 +203,17 @@ export class CrmLead extends models.Model {
             expected_revenue: 900,
             won_status: "won",
             probability: 100,
+        },
+        {
+            id: 5,
+            name: "Lost bid",
+            stage_id: 2,
+            team_id: 1,
+            expected_revenue: 700,
+            active: false,
+            won_status: "lost",
+            probability: 0,
+            automated_probability: 30,
         },
     ];
 }

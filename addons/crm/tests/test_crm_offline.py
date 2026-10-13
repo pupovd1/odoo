@@ -112,6 +112,96 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
                      {'context': {}, 'specification': {}})
         self.assertEqual(contact.email, 'stale@example.com')
 
+    def _salesman_lead(self, name):
+        """ An opportunity of the salesman, who replays the queued calls below
+        (no sudo: what the salesman may do online is what the replay may do). """
+        self.authenticate(self.user_sales_salesman.login, self.user_sales_salesman.login)
+        return self.env['crm.lead'].create({
+            'name': name,
+            'type': 'opportunity',
+            'team_id': self.sales_team_1.id,
+            'stage_id': self.stage_team1_1.id,
+            'user_id': self.user_sales_salesman.id,
+        })
+
+    def test_offline_mark_won_replay(self):
+        """ Mark won offline queues crm.lead.action_set_won([[id]]): replaying it
+        leaves the lead won, as the online Won button (action_set_won_rainbowman,
+        which only adds the rainbowman to its result) does. """
+        online_lead = self._salesman_lead('Won online')
+        offline_lead = self._salesman_lead('Won offline')
+
+        online_lead.with_user(self.user_sales_salesman).action_set_won_rainbowman()
+        self._replay('crm.lead', 'action_set_won', [[offline_lead.id]], {'context': {}})
+
+        for lead in online_lead + offline_lead:
+            with self.subTest(lead=lead.name):
+                self.assertEqual(lead.won_status, 'won')
+                self.assertTrue(lead.stage_id.is_won)
+                self.assertEqual(lead.probability, 100)
+        self.assertEqual(offline_lead.stage_id, online_lead.stage_id)
+
+    def test_offline_activity_create_replay(self):
+        """ Scheduling an activity offline queues mail.activity.create with values
+        the client resolved itself (model name, record, type, summary, deadline,
+        assignee): replaying it links the activity to the lead. """
+        lead = self._salesman_lead('Activity offline')
+        call_type = self.env.ref('mail.mail_activity_data_call')
+        [activity_id] = self._replay('mail.activity', 'create', [[{
+            'res_model': 'crm.lead',
+            'res_id': lead.id,
+            'activity_type_id': call_type.id,
+            'summary': 'Call back about the quote',
+            'date_deadline': '2030-01-15',
+            'user_id': self.user_sales_salesman.id,
+        }]], {'context': {}})
+
+        activity = self.env['mail.activity'].browse(activity_id)
+        self.assertEqual(activity.res_model_id.model, 'crm.lead')
+        self.assertEqual(activity.res_model, 'crm.lead')
+        self.assertEqual(activity.res_id, lead.id)
+        self.assertEqual(lead.activity_ids, activity)
+        self.assertEqual(activity.activity_type_id, call_type)
+        self.assertEqual(activity.summary, 'Call back about the quote')
+        self.assertEqual(str(activity.date_deadline), '2030-01-15')
+        self.assertEqual(activity.user_id, self.user_sales_salesman)
+
+    def test_offline_activity_done_replay(self):
+        """ Marking an activity done offline queues only mail.activity.action_done
+        on it, as the online Mark Done does: replaying it marks it done and logs it
+        in the lead's chatter. """
+        lead = self._salesman_lead('Activity done offline')
+        activity = lead.with_user(self.user_sales_salesman).activity_schedule(
+            'mail.mail_activity_data_todo', summary='Send the brochure',
+            user_id=self.user_sales_salesman.id,
+        )
+        todo_type = activity.activity_type_id
+        self._replay('mail.activity', 'action_done', [[activity.id]], {'context': {}})
+
+        self.assertFalse(lead.activity_ids)
+        done_messages = lead.message_ids.filtered(lambda message: message.mail_activity_type_id == todo_type)
+        self.assertEqual(len(done_messages), 1)
+        self.assertIn('Send the brochure', done_messages.body)
+
+    def test_offline_log_call_replay(self):
+        """ Logging a call offline queues a single crm.lead.action_log_call: the
+        replay posts a done Call in the lead's chatter and leaves no open
+        activity. """
+        lead = self._salesman_lead('Call offline')
+        call_type = self.env.ref('mail.mail_activity_data_call')
+        self._replay('crm.lead', 'action_log_call', [[lead.id]], {
+            'summary': 'Discussed the delivery date',
+            'feedback': 'Wants delivery before May.',
+            'context': {},
+        })
+
+        self.assertFalse(lead.activity_ids)
+        call_messages = lead.message_ids.filtered(lambda message: message.mail_activity_type_id == call_type)
+        self.assertEqual(len(call_messages), 1)
+        self.assertIn('Discussed the delivery date', call_messages.body)
+        self.assertIn('Wants delivery before May.', call_messages.body)
+        self.assertEqual(call_messages.author_id, self.user_sales_salesman.partner_id)
+
     def test_offline_wiring_and_unavailable_actions(self):
         """ The screens of decisions D13 and D16 are opted out of the offline
         cache, so the framework never makes them available offline; the stage list

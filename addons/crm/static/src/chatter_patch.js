@@ -13,6 +13,13 @@ patch(Chatter.prototype, {
     setup() {
         super.setup(...arguments);
         this.crmOffline = useCrmOffline();
+        // files dropped on a lead's chatter offline aren't uploaded
+        const uploader = this.attachmentUploader;
+        if (uploader) {
+            const uploadFile = uploader.uploadFile;
+            uploader.uploadFile = (...args) =>
+                this.isCrmLeadReadonlyOffline ? Promise.resolve() : uploadFile.call(uploader, ...args);
+        }
         useOnChange(
             () => [this.isCrmLeadReadonlyOffline],
             (readonly) => {

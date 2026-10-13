@@ -55,7 +55,8 @@ export class CrmPlsTooltipButton extends Component {
         } else {
             // Apply pending changes. They may change probability
             await this.props.record.save();
-            if (status(this) === "destroyed" || !this.props.record.resId) {
+            // (a save that found the connection lost is queued: no lookup)
+            if (status(this) === "destroyed" || !this.props.record.resId || this.crmOffline.isOffline()) {
                 return;
             }
 
