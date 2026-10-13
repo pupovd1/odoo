@@ -86,8 +86,9 @@ try {
 
 Exports: `launchMobile`, `login`, `readPipeline`, `waitUntilCached`, `goOffline`, `goOnline`,
 `offlineState` (indicator, label, disabled-control count, navigator.onLine), `queuedCalls`
-(the framework's queue: model, method, args, error), `serverCall`, `poll`, `serverLogOffset`,
-`serverRequestsSince`, `BUS_WORKER_REQUEST`, `SELECTORS`, `OFFLINE_NOISE`, `ConsoleLog`.
+(the framework's queue: model, method, args, error), `serverCall`, `poll`, `forgetView` and
+`restoreOfflineStore` (see "A never-visited view"), `serverLogOffset`, `serverRequestsSince`,
+`BUS_WORKER_REQUEST`, `SELECTORS`, `OFFLINE_NOISE`, `ConsoleLog`.
 Save screenshots and logs under .eval/state/.
 
 ## Driving the flows
@@ -137,7 +138,99 @@ Wait for `goOnline()` to return with `state.shown === false` (queue empty), then
 
 Tests may write test data in crm_offline; reset it between runs with scripts/dev/reset-db.sh.
 
-## Limits (measured)
+## A never-visited view: the offline action helper
+
+A list or kanban view whose records were never loaded online must show Odoo's offline action
+helper when opened offline ("There is no data to display offline for the given filters"), not an
+empty view or an error. The UI won't take you to such a view: offline, the view switcher disables
+views that aren't cached, and the action plugin swaps an unavailable view for a cached one. So
+make the pipeline look never visited:
+
+1. Visit the pipeline online and wait until it is cached: `readPipeline(page)`,
+   `waitUntilCached(page, "kanban")`.
+2. Get the pipeline action's id: the `ir.actions.act_window` whose path is `crm`.
+3. Go offline, then call `forgetView(page, { actionId, model: "crm.lead" })`. It backs up (into
+   the IndexedDB database `offline-qa-backup`) and deletes the action's visited-ui items
+   (IndexedDB `offline`) and crm.lead's cached `web_read_group` / `web_search_read` results
+   (IndexedDB `rpc`). The view definitions stay cached. Check that it removed at least one of each.
+4. Reload: until then the page still has the data in memory.
+5. Check: `SELECTORS.noOfflineData` shows that exact text; no kanban card; no `.o_error_dialog`;
+   no error except `OFFLINE_NOISE`; the systray still says "Working offline".
+6. Restore the offline store: `restoreOfflineStore(page)`, reload, and check that the pipeline
+   renders its cards from cache again, still offline. Then `goOnline`.
+
+```js
+// .eval/state/qa/never_visited_view.mjs
+import { launchMobile, login, readPipeline, waitUntilCached, goOffline, goOnline, offlineState, forgetView, restoreOfflineStore, serverCall, SELECTORS, OFFLINE_NOISE }
+    from "../../../scripts/dev/offline-smoke.mjs";
+
+const { context, page, close, log } = await launchMobile();
+try {
+    await login(page); // 1. the pipeline, visited online
+    const online = await readPipeline(page);
+    await waitUntilCached(page, "kanban");
+    const [{ id: actionId }] = await serverCall(context, "ir.actions.act_window", "search_read", [[["path", "=", "crm"]], ["id"]]); // 2.
+
+    await goOffline(context, page); // 3.
+    const removed = await forgetView(page, { actionId, model: "crm.lead" });
+    if (!removed.visited || !removed.data) throw new Error(`nothing to forget: ${JSON.stringify(removed)}`);
+    log.phase = "offline-reload";
+    await page.reload(); // 4.
+    const helper = page.locator(SELECTORS.noOfflineData); // 5.
+    await helper.waitFor({ timeout: 30_000 });
+    const text = (await helper.innerText()).trim();
+    if (!text.includes("There is no data to display offline for the given filters")) throw new Error(`helper text: ${text}`);
+    if (await page.locator(SELECTORS.kanbanCard).count()) throw new Error("kanban cards shown, not the helper");
+    if (await page.locator(SELECTORS.errorDialog).count()) throw new Error("error dialog shown");
+    const errors = [...log.errors("pageerror"), ...log.errors("console.error")].filter((e) => !OFFLINE_NOISE.test(e.text));
+    if (errors.length) throw new Error(`errors: ${errors.map((e) => e.text.split("\n")[0]).join(" | ")}`);
+    if ((await offlineState(page)).label !== "Working offline") throw new Error("not offline any more");
+    await page.screenshot({ path: ".eval/state/qa/never-visited-helper.png" });
+    console.log(`PASS: never-visited view shows "${text}"`);
+
+    await restoreOfflineStore(page); // 6.
+    await page.reload();
+    const restored = await readPipeline(page);
+    if (restored.cards.length !== online.cards.length) throw new Error("the restored store doesn't render the pipeline");
+    console.log(`PASS: offline store restored, the pipeline renders from cache again (${restored.cards.length} cards)`);
+    await goOnline(context, page);
+} finally {
+    await close();
+}
+```
+
+Run it from the repository root (`node .eval/state/qa/never_visited_view.mjs`). The store lives in
+the browser profile that `launchMobile()` creates and `close()` deletes, so a run that fails
+before step 6 leaves nothing behind.
+
+A lead form never opened online behaves differently in stock code: opening `/odoo/crm/<id>`
+offline shows the cached pipeline instead (the action plugin swaps the unavailable form for a
+cached view), with no helper and no error. KICKOFF acceptance check 9 asks for the helper there.
+
+## Limits
+
+### What the Playwright mobile context can and can't prove
+
+`launchMobile()` gives a 375x667 context with isMobile and hasTouch. Measured in this repo:
+
+| Area | Proven in the Playwright mobile context | Can't be proven there: prove it with `./scripts/dev/test-js.sh mobile` |
+|---|---|---|
+| Small screen | `UIPlugin.isSmall` is true, so the mobile UI renders | |
+| Touch detection | `ontouchstart` exists, `(pointer: coarse)` matches, Odoo's `hasTouch()` is true, `<body>` has `o_touch_device` | |
+| Taps | `locator.tap()` sends touch events: tapping a pipeline card opened the lead | |
+| Gestures | only taps: Playwright has `locator.tap()` and `page.touchscreen.tap()`, no touch move; a mouse drag is not a swipe | swipes and drags: under the mobile preset, hoot-dom's `drag`, `pointerDown` and `scroll` send touch-type pointer events |
+| Bottom sheets | a dropdown opens as a bottom sheet (a card's ⋮ menu gave `.o_bottom_sheet` with Edit and Delete), its items can be tapped, and tapping `.o_bottom_sheet_backdrop` closes it | dismissing it by swiping down: the sheet tracks the scroll position of `.o_bottom_sheet_rail`, which hoot `scroll` can set |
+| PWA install | the manifest can be read (`context.request.get("/web/manifest.webmanifest")`: name, shortcuts, icons); the service worker and the offline cache work (offline-smoke.mjs) | the install prompt: headless Chromium fires no `beforeinstallprompt` and has no install UI; dispatch a `BeforeInstallPromptEvent` as addons/web/static/tests/core/pwa_service.test.js does |
+| Installed app | nothing: `display-mode: standalone` can't be emulated (CDP `Emulation.setEmulatedMedia` left it false) | code that branches on `isDisplayStandalone()`: `mockMatchMedia({ "display-mode": "standalone" })` from `@odoo/hoot` |
+| Android or iOS code | nothing: the user agent stays desktop Chrome, so `isMobileOS()` is false (as in the mobile JS preset) | `mockUserAgent("android")` from `@odoo/hoot` |
+
+`./scripts/dev/test-js.sh mobile` runs crm's own unit tests (addons/crm/static/tests/*.test.js)
+under hoot's mobile preset: 375x667 with `touch: true`, which mocks touch (`mockTouch(true)`)
+before each test. web's tests don't run there. So the proof for a row above is a crm unit test
+that runs in that preset: tag it `test.tags("mobile")` or leave it untagged, and don't tag it
+`headless`, because the mobile run excludes `headless` tests.
+
+### Measured gaps
 
 - Playwright can't take workers offline (shared or dedicated). Odoo's bus worker keeps or
   reopens its websocket while the page is offline (`GET /websocket`,
@@ -153,5 +246,3 @@ Tests may write test data in crm_offline; reset it between runs with scripts/dev
   (`net::ERR_INTERNET_DISCONNECTED`), an uncaught `TypeError: Failed to fetch` from
   `odoo.reloadMenus` (the page's inline boot script) and one from
   `LocalizationPlugin.fetchTranslations`. Any other error is a finding.
-- The browser keeps the desktop Chrome user agent (as the mobile JS preset does), so Odoo's
-  `isMobileOS()` is false; mobile UI is driven by screen size.

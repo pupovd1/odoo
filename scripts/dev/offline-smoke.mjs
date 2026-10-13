@@ -294,6 +294,120 @@ export async function queuedCalls(page) {
     });
 }
 
+// Multi-record reads that list and kanban views keep in the RPC cache (tables of IndexedDB "rpc").
+const VIEW_DATA_METHODS = ["web_read_group", "web_search_read"];
+const STORE_BACKUP = "offline-qa-backup";
+
+/**
+ * Make an action's list and kanban views look never visited online, to test the offline action
+ * helper: back up, then delete, the action's visited-ui items and `model`'s cached web_read_group
+ * and web_search_read results. The view definitions (get_views) stay cached, as they are for any
+ * app opened online. The page still has the data in memory, so reload (offline) afterwards.
+ * restoreOfflineStore(page) puts every entry back. Returns { visited, data }: entries removed.
+ */
+export async function forgetView(page, { actionId, model }) {
+    return page.evaluate(
+        async ({ actionId, model, methods, backupName }) => {
+            const done = (request) =>
+                new Promise((resolve, reject) => {
+                    request.onsuccess = () => resolve(request.result);
+                    request.onerror = () => reject(request.error);
+                });
+            const names = (await indexedDB.databases()).map((db) => db.name);
+            if (names.includes(backupName)) {
+                throw new Error(`${backupName} exists: restoreOfflineStore() the previous forgetView() first`);
+            }
+            const targets = [
+                ["offline", ["visited-ui-items"], (key) => {
+                    const item = JSON.parse(key);
+                    return item.action === actionId && ["kanban", "list"].includes(item.viewType);
+                }],
+                ["rpc", methods, (key) => JSON.parse(key).params?.model === model],
+            ];
+            const removed = [];
+            for (const [dbName, tables, matches] of targets) {
+                if (!names.includes(dbName)) {
+                    continue;
+                }
+                const db = await done(indexedDB.open(dbName));
+                try {
+                    for (const table of tables.filter((t) => db.objectStoreNames.contains(t))) {
+                        const store = db.transaction(table).objectStore(table);
+                        const [keys, values] = await Promise.all([done(store.getAllKeys()), done(store.getAll())]);
+                        keys.forEach((key, i) => matches(key) && removed.push({ dbName, table, key, value: values[i] }));
+                    }
+                } finally {
+                    db.close();
+                }
+            }
+            const backup = await new Promise((resolve, reject) => {
+                const request = indexedDB.open(backupName, 1);
+                request.onupgradeneeded = () => request.result.createObjectStore("entries", { autoIncrement: true });
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+            try {
+                const tx = backup.transaction("entries", "readwrite");
+                removed.forEach((entry) => tx.objectStore("entries").add(entry));
+                await new Promise((resolve, reject) => {
+                    tx.oncomplete = resolve;
+                    tx.onerror = () => reject(tx.error);
+                });
+            } finally {
+                backup.close();
+            }
+            for (const dbName of new Set(removed.map((entry) => entry.dbName))) {
+                const db = await done(indexedDB.open(dbName));
+                try {
+                    for (const { table, key } of removed.filter((entry) => entry.dbName === dbName)) {
+                        await done(db.transaction(table, "readwrite").objectStore(table).delete(key));
+                    }
+                } finally {
+                    db.close();
+                }
+            }
+            return {
+                visited: removed.filter((entry) => entry.dbName === "offline").length,
+                data: removed.filter((entry) => entry.dbName === "rpc").length,
+            };
+        },
+        { actionId, model, methods: VIEW_DATA_METHODS, backupName: STORE_BACKUP }
+    );
+}
+
+/** Put back what forgetView() removed, and drop its backup. Returns the number of entries restored. */
+export async function restoreOfflineStore(page) {
+    return page.evaluate(async (backupName) => {
+        const done = (request) =>
+            new Promise((resolve, reject) => {
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        if (!(await indexedDB.databases()).some((db) => db.name === backupName)) {
+            throw new Error(`no ${backupName}: nothing to restore`);
+        }
+        const backup = await done(indexedDB.open(backupName));
+        let entries;
+        try {
+            entries = await done(backup.transaction("entries").objectStore("entries").getAll());
+        } finally {
+            backup.close();
+        }
+        for (const dbName of new Set(entries.map((entry) => entry.dbName))) {
+            const db = await done(indexedDB.open(dbName));
+            try {
+                for (const { table, key, value } of entries.filter((entry) => entry.dbName === dbName)) {
+                    await done(db.transaction(table, "readwrite").objectStore(table).put(value, key));
+                }
+            } finally {
+                db.close();
+            }
+        }
+        await done(indexedDB.deleteDatabase(backupName));
+        return entries.length;
+    }, STORE_BACKUP);
+}
+
 /**
  * Call a model method on the server with the browser's session, for server-side checks:
  * serverCall(context, "crm.lead", "read", [[id], ["name"]]). The request is sent from Node,
