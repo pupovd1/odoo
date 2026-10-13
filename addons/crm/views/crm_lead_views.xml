@@ -88,7 +88,7 @@
                                     <label for="probability" class="d-inline-block"/>
                                     <a class="border-0 mx-2 p-0 mb-1 mb-md-0 btn btn-light"
                                         name="action_set_automated_probability"
-                                        role="button" type="object"
+                                        role="button" type="object" data-crm-offline-disable="1"
                                         invisible="is_automated_probability or won_status == 'lost'">
                                             <img class="o_lead_opportunity_form_AI_switch_img"
                                                 title="Switch to AI-computed probabilities"
@@ -137,7 +137,7 @@
                                         <span> %</span>
                                         <a class="btn btn-link p-0"
                                             name="action_set_automated_probability"
-                                            role="button" type="object"
+                                            role="button" type="object" data-crm-offline-disable="1"
                                             invisible="is_automated_probability or won_status == 'lost'">
                                             <img class="o_lead_opportunity_form_AI_switch_img mx-1"
                                                 title="Switch to AI-computed probabilities"

@@ -1,4 +1,5 @@
 import { CrmControlPanel } from "@crm/views/crm_control_panel";
+import { CrmListModel } from "@crm/views/crm_list/crm_list_model";
 import { CrmSearchModel } from "@crm/views/crm_search_model";
 import { registry } from "@web/core/registry";
 import { listView } from "@web/views/list/list_view";
@@ -13,6 +14,7 @@ export const crmListView = {
         }
     },
     ControlPanel: CrmControlPanel,
+    Model: CrmListModel,
     SearchModel: CrmSearchModel,
     buttonTemplate: "crm.List.Buttons",
 };

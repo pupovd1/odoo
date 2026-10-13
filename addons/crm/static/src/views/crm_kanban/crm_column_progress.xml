@@ -11,6 +11,10 @@
             </attribute>
         </xpath>
 
+        <xpath expr="//div[@t-on-click='this.onRottingIconClick']" position="attributes">
+            <attribute name="t-att-class">{ 'o_disabled_offline opacity-50 pe-none': this.crmOffline.isOffline() }</attribute>
+        </xpath>
+
         <AnimatedNumber position="before">
             <div class="ms-auto"/>
         </AnimatedNumber>

@@ -25,6 +25,7 @@
     </record>
 
     <record id="crm_recurring_plan_action" model="ir.actions.act_window">
+        <field name="cache" eval="False"/>
         <field name="name">Recurring Plans</field>
         <field name="res_model">crm.recurring.plan</field>
         <field name="view_mode">list</field>

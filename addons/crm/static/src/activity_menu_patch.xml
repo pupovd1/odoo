@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-inherit="mail.ActivityMenu" t-inherit-mode="extension">
+        <xpath expr="//div[hasclass('o-mail-ActivityGroup')]" position="attributes">
+            <attribute name="t-att-class">{ 'o_disabled_offline opacity-50 pe-none': this.isCrmGroupDisabledOffline(group) }</attribute>
+            <attribute name="t-att-aria-disabled">this.isCrmGroupDisabledOffline(group) ? 'true' : undefined</attribute>
+        </xpath>
+    </t>
+
+</templates>

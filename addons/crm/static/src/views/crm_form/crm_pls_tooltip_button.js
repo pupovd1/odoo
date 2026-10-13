@@ -1,9 +1,10 @@
-import { Component, status, t, useProps } from "@odoo/owl";
+import { Component, status, t, useOnChange, useProps } from "@odoo/owl";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
 import { localization } from "@web/core/l10n/localization";
 import { registry } from '@web/core/registry';
 import { usePopover } from "@web/core/popover/popover_hook";
 import { useService } from "@web/core/utils/hooks";
+import { useCrmOffline } from "@crm/mobile/offline_hooks";
 
 
 export class CrmPlsTooltip extends Component {
@@ -34,9 +35,20 @@ export class CrmPlsTooltipButton extends Component {
             position: "bottom-start",
             useBottomSheet: this.ui.isSmall
         });
+        // Predictive lead scoring needs the server: offline the button is disabled
+        // (framework) and does nothing, and an open tooltip closes.
+        this.crmOffline = useCrmOffline();
+        useOnChange(
+            () => [this.crmOffline.isOffline()],
+            (isOffline) => isOffline && this.popover.isOpen && this.popover.close(),
+            { initialRun: false }
+        );
     }
 
     async onClickPlsTooltipButton(ev) {
+        if (this.crmOffline.isOffline()) {
+            return;
+        }
         const tooltipButtonEl = ev.currentTarget;
         if (this.popover.isOpen) {
             this.popover.close();

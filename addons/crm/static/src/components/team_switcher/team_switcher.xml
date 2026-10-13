@@ -2,7 +2,7 @@
 <templates xml:space="preserve">
 
     <t t-name="crm.team_switcher">
-        <Dropdown menuClass="'crm_team_switcher_dropdown d-flex flex-column'">
+        <Dropdown menuClass="'crm_team_switcher_dropdown d-flex flex-column'" state="this.dropdownState" disabled="this.isDisabledOffline">
             <button class="o_cp_team_switcher text-truncate fs-4 btn btn-link text-reset fw-normal"
                 t-attf-class="{{this.hasDropdown ? 'o-dropdown-caret' : 'pe-none'}}" t-att-data-tooltip="this.currentLabel">
                 <span class="text-truncate" t-out="this.currentLabel"/>

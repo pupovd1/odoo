@@ -18,6 +18,13 @@ class CrmFormRecord extends formView.Model.Record {
      * and "partner_email_update", which are computed fields that hold a value
      * whenever we need to synch.
      *
+     * Offline, the save is queued with the same force-saved values. Onchanges
+     * don't run offline though: once the partner itself was changed offline, the
+     * flags still describe the previous partner, so nothing is force-saved and
+     * the server computes the email and phone from the new partner at replay, as
+     * the online onchange does. The rainbowman lookup is skipped offline: it
+     * would fail, and a queued one would show detached from the stage change.
+     *
      * @override
      */
     async _save() {
@@ -35,11 +42,16 @@ class CrmFormRecord extends formView.Model.Record {
                 ? this._values.partner_phone_update // original value
                 : this._changes.partner_phone_update; // new value
 
-        if (needsSynchronizationEmail && this._changes.email_from === undefined && this._values.email_from) {
-            this._changes.email_from = this._values.email_from;
-        }
-        if (needsSynchronizationPhone && this._changes.phone === undefined && this._values.phone) {
-            this._changes.phone = this._values.phone;
+        const partnerChangedOffline =
+            this.model.offlinePlugin.isOffline() &&
+            ("partner_id" in this._changes || "partner_id" in (this._offlineChanges || {}));
+        if (!partnerChangedOffline) {
+            if (needsSynchronizationEmail && this._changes.email_from === undefined && this._values.email_from) {
+                this._changes.email_from = this._values.email_from;
+            }
+            if (needsSynchronizationPhone && this._changes.phone === undefined && this._values.phone) {
+                this._changes.phone = this._values.phone;
+            }
         }
 
         if ("stage_id" in this._changes) {
@@ -47,7 +59,7 @@ class CrmFormRecord extends formView.Model.Record {
         }
 
         const res = await super._save(...arguments);
-        if (res && changeStage) {
+        if (res && changeStage && !this.model.offlinePlugin.isOffline()) {
             await checkRainbowmanMessage(this.model.orm, this.model.effect, this.resId);
         }
         return res;

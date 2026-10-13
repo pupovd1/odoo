@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+    <t t-inherit="web.views.ViewButton" t-inherit-mode="extension">
+        <xpath expr="//t[@t-tag='this.props.tag']" position="attributes">
+            <attribute name="t-att-tabindex">this.isCrmDisabledOffline ? -1 : this.props.tabindex</attribute>
+            <attribute name="t-att-aria-disabled">this.isCrmDisabledOffline ? 'true' : false</attribute>
+        </xpath>
+    </t>
+</templates>
