@@ -683,6 +683,7 @@ export class Store extends BaseStore {
      */
     async getMessagePostParams({ body, postData, thread }) {
         const {
+            additionalRecipients,
             attachments,
             cannedResponseIds,
             emailAddSignature,
@@ -715,9 +716,12 @@ export class Store extends BaseStore {
             subject,
         };
         if (!isNote) {
+            // additionalRecipients is snapshotted before the composer is
+            // released. A follow-up draft can replace the live list while
+            // this post is still awaiting its RPC.
             for (const recipient of [
                 ...thread.suggestedRecipients,
-                ...thread.additionalRecipients,
+                ...(additionalRecipients ?? thread.additionalRecipients),
             ]) {
                 if (!isCcEnabled && recipient.recipient_type === "cc") {
                     continue;

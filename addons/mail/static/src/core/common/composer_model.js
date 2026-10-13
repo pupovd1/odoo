@@ -75,6 +75,12 @@ export class Composer extends Record {
         // A cleared draft is a new message. The server adds the signature
         // unless this one already went through the full composer.
         this.emailAddSignature = true;
+        // Mentions and canned responses are snapshotted on postData before
+        // this runs. Reset them with the draft: the composer record is reused
+        // while the post RPC is still in flight.
+        this.mentionedPartners.length = 0;
+        this.mentionedRoles.length = 0;
+        this.cannedResponses.length = 0;
         if (this.updateFrom === "html") {
             this.composerHtml = markup("<div class='o-paragraph'><br></div>");
         } else {

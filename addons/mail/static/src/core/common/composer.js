@@ -902,6 +902,12 @@ export class Composer extends Component {
                 return;
             }
             this.clear();
+            // Extra recipients live on the thread and are snapshotted on
+            // postData. clear() leaves them alone so closing the full composer
+            // keeps the list that form just wrote back.
+            if (this.props.composer.thread) {
+                this.props.composer.thread.additionalRecipients = [];
+            }
             await this.deleteSavedContent();
             const epoch = this.props.onPostCallback?.({ immediate: true });
             try {
@@ -1002,6 +1008,7 @@ export class Composer extends Component {
             mentionedRoles: [...(this.props.composer.mentionedRoles || [])],
             cannedResponseIds: this.props.composer.cannedResponses.map((c) => c.id),
             parentId: this.props.composer.replyToMessage?.id,
+            additionalRecipients: [...(this.thread?.additionalRecipients || [])],
         };
     }
 
@@ -1021,6 +1028,21 @@ export class Composer extends Component {
     async _sendMessage(value, postData, extraData) {
         const post = this.thread.post.bind(this.thread, value, postData, extraData);
         this.deleteSavedContent();
+        // sendMessage() snapshots recipients and clears the shared draft
+        // before this runs. Direct callers (sending a GIF) skip that, so do
+        // it here before the post yields — never after, or the write lands
+        // on the next draft.
+        if (postData.additionalRecipients === undefined) {
+            postData.additionalRecipients = [...(this.thread?.additionalRecipients || [])];
+            this.props.composer.mentionedPartners.length = 0;
+            this.props.composer.mentionedRoles.length = 0;
+            this.props.composer.cannedResponses.length = 0;
+            this.props.composer.replyToMessage = undefined;
+            this.props.composer.emailAddSignature = true;
+            if (this.props.composer.thread) {
+                this.props.composer.thread.additionalRecipients = [];
+            }
+        }
         let message;
         if (this.thread.channel) {
             // feature of (optimistic) temp message
@@ -1028,11 +1050,6 @@ export class Composer extends Component {
         } else {
             message = await post();
         }
-        this.suggestion?.clearRawMentions();
-        this.suggestion?.clearCannedResponses();
-        this.props.composer.replyToMessage = undefined;
-        this.props.composer.emailAddSignature = true;
-        this.props.composer.thread.additionalRecipients = [];
         return message;
     }
 
