@@ -8,6 +8,13 @@ _build/
 !.github
 !.mailmap
 !.weblate.json
+# Claude Code project setup and run briefs; local settings and run state stay ignored
+!/.claude/
+/.claude/settings.local.json
+!/.eval/
+/.eval/*
+!/.eval/*.md
+/.eval/state/
 # compiled python files
 *.py[co]
 __pycache__/
