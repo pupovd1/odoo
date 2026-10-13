@@ -237,11 +237,14 @@ export class KanbanQuickCreateController extends Component {
             this.state.disabled = false;
             return true;
         } else {
-            if (this.offlinePlugin.isOffline() && isValid) {
+            // Already queued for sync. Callers treat false as a failed save and
+            // block leaving the view or opening another column.
+            const queued = Boolean(isOfflineTempId(resId) && isValid);
+            if (queued || (this.offlinePlugin.isOffline() && isValid)) {
                 this.props.quickCreateState.closeQuickCreate();
             }
             this.state.disabled = false;
-            return false;
+            return queued;
         }
     }
 
