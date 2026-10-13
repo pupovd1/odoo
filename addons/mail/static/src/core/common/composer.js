@@ -29,6 +29,7 @@ import {
     onWillUnmount,
     proxy,
     signal,
+    status,
     t,
     untrack,
     useApp,
@@ -886,13 +887,32 @@ export class Composer extends Component {
                 return;
             }
             this.state.active = false;
-            await cb(trimEmptyBlocksAround(this.props.composer.composerHtml));
-            if (this.props.onPostCallback) {
-                this.props.onPostCallback();
+            const value = trimEmptyBlocksAround(this.props.composer.composerHtml);
+            // Editing keeps the composer mounted until the save finishes.
+            // A new message is cleared first: the optimistic row shows up
+            // before the RPC returns, and the chatter "Send message" button
+            // toggles, so leaving this composer open makes the next click
+            // close it.
+            if (this.props.composer.message) {
+                await cb(value);
+                this.props.onPostCallback?.();
+                this.clear();
+                this.state.active = true;
+                this.ref()?.focus();
+                return;
             }
             this.clear();
-            this.state.active = true;
-            this.ref()?.focus();
+            await this.deleteSavedContent();
+            const epoch = this.props.onPostCallback?.({ immediate: true });
+            try {
+                await cb(value);
+            } finally {
+                this.props.onPostCallback?.({ epoch });
+                if (status(this) !== "destroyed") {
+                    this.state.active = true;
+                    this.ref()?.focus();
+                }
+            }
         }
     }
 
@@ -966,8 +986,10 @@ export class Composer extends Component {
                 return false;
             }
         }
+        const postData = this.postData;
+        const extraData = this.extraData;
         await this.processMessage(async (value) => {
-            await this._sendMessage(value, this.postData, this.extraData);
+            await this._sendMessage(value, postData, extraData);
         });
     }
 

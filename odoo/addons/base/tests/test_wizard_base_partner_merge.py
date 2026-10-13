@@ -48,47 +48,6 @@ class TestMergePartner(TransactionCase):
             'res_id': self.bank3.id,
         })
 
-    def test_merge_portal_users_other_company(self):
-        company_a = self.env.company
-        company_b = self.env['res.company'].create({'name': 'Company B'})
-
-        user = new_test_user(
-            self.env, login='contact_merger',
-            groups='base.group_user,base.group_partner_manager',
-            company_id=company_a.id,
-            company_ids=[Command.set((company_a + company_b).ids)],
-        )
-
-        partners = self.partner1 + self.partner2
-        partners.write({'email': 'merge@example.com', 'company_id': False})
-        portal_users = self.env['res.users'].create([
-            {
-                'login': partner.name,
-                'partner_id': partner.id,
-                'group_ids': [Command.set([self.env.ref('base.group_portal').id])],
-                'company_id': company_a.id,
-                'company_ids': [Command.set(company_a.ids)],
-            }
-            for partner in partners
-        ])
-        self.assertFalse(partners.company_id)
-
-        for company in (company_a, company_b):
-            with self.subTest(company=company.name), self.cr.savepoint():
-                # Cached user relations can hide the effect of company record rules.
-                self.env.invalidate_all()
-
-                wizard = self.env['base.partner.merge.automatic.wizard'].with_user(user).with_context(
-                    allowed_company_ids=company.ids,
-                    active_model='res.partner', active_ids=partners.ids,
-                ).create({'dst_partner_id': partners[1].id})
-
-                with self.assertRaisesRegex(UserError, 'You cannot merge contacts linked to more than one user'):
-                    wizard.action_merge()
-
-                self.assertEqual(partners.exists(), partners)
-                self.assertEqual(portal_users.mapped('partner_id'), partners)
-
     def test_merge_partners_without_bank_accounts(self):
         """ Test merging partners without any bank accounts """
         partner4 = self.Partner.create({'name': 'Partner 4', 'email': 'partner4@example.com'})
@@ -223,3 +182,56 @@ class TestMergePartner(TransactionCase):
         MergeWizard_with_context.create({}).action_merge()
         self.assertTrue(dst_partner.exists())
         self.assertEqual(u1.partner_id.id, dst_partner.id)
+
+
+@tagged('post_install', '-at_install')
+class TestMergePartnerMultiCompany(TransactionCase):
+    """Creating portal users writes res.users columns added by other modules.
+
+    at_install runs while only base is loaded. On a database that already has
+    mail installed, that insert omits notification_type and violates NOT NULL.
+    post_install runs with the full registry, so the column is filled.
+    """
+
+    def test_merge_portal_users_other_company(self):
+        company_a = self.env.company
+        company_b = self.env['res.company'].create({'name': 'Company B'})
+
+        user = new_test_user(
+            self.env, login='contact_merger',
+            groups='base.group_user,base.group_partner_manager',
+            company_id=company_a.id,
+            company_ids=[Command.set((company_a + company_b).ids)],
+        )
+
+        partners = self.env['res.partner'].create([
+            {'name': 'Partner 1', 'email': 'merge@example.com', 'company_id': False},
+            {'name': 'Partner 2', 'email': 'merge@example.com', 'company_id': False},
+        ])
+        portal_users = self.env['res.users'].create([
+            {
+                'login': partner.name,
+                'partner_id': partner.id,
+                'group_ids': [Command.set([self.env.ref('base.group_portal').id])],
+                'company_id': company_a.id,
+                'company_ids': [Command.set(company_a.ids)],
+            }
+            for partner in partners
+        ])
+        self.assertFalse(partners.company_id)
+
+        for company in (company_a, company_b):
+            with self.subTest(company=company.name), self.cr.savepoint():
+                # Cached user relations can hide the effect of company record rules.
+                self.env.invalidate_all()
+
+                wizard = self.env['base.partner.merge.automatic.wizard'].with_user(user).with_context(
+                    allowed_company_ids=company.ids,
+                    active_model='res.partner', active_ids=partners.ids,
+                ).create({'dst_partner_id': partners[1].id})
+
+                with self.assertRaisesRegex(UserError, 'You cannot merge contacts linked to more than one user'):
+                    wizard.action_merge()
+
+                self.assertEqual(partners.exists(), partners)
+                self.assertEqual(portal_users.mapped('partner_id'), partners)
