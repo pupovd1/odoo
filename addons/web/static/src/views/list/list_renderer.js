@@ -1320,7 +1320,8 @@ export class ListRenderer extends Component {
     }
 
     get displayRowCreates() {
-        return this.isX2Many && this.canCreate;
+        // Adding an x2many line needs a server round-trip. Hide it while offline.
+        return this.isX2Many && this.canCreate && !this.offlinePlugin.isOffline();
     }
 
     /**

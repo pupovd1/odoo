@@ -13,6 +13,7 @@ import { Dropdown } from "@web/core/dropdown/dropdown";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { useHotkey } from "@web/core/hotkeys/hotkey_hook";
 import { _t } from "@web/core/l10n/translation";
+import { isOfflineTempId } from "@web/core/offline/offline_plugin";
 import { evaluateExpr } from "@web/core/py_js/py";
 import { registry } from "@web/core/registry";
 import { useBus, useService } from "@web/core/utils/hooks";
@@ -488,6 +489,9 @@ export class KanbanRenderer extends Component {
     }
 
     async validateQuickCreate(recordId, mode, group) {
+        if (isOfflineTempId(recordId)) {
+            return;
+        }
         const record = await group.addExistingRecord(recordId, true);
         if (mode === "edit") {
             await this.props.openRecord(record);

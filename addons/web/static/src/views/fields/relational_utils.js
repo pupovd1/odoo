@@ -482,7 +482,12 @@ export class Many2XAutocomplete extends Component {
         ];
     }
 
-    addCreateSuggestion({ request }) {
+    addCreateSuggestion({ request, records }) {
+        // Offline quick-create is for a name that is not already in the
+        // cached results. Matching rows stay selectable on their own.
+        if (this.offlinePlugin.isOffline() && records?.length) {
+            return false;
+        }
         return !!this.props.quickCreate && request.length > 0;
     }
 
