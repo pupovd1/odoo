@@ -1001,13 +1001,17 @@ export class OfflinePlugin extends Plugin {
         this._assertCanPersist();
         const token = this._nextSealToken(table, key);
         const id = this._sealId(table, key);
-        const job = this._crypto.encrypt(value).then(async (sealed) => {
-            // A remove or logout can land while encrypt is in flight. Writing
-            // afterwards would put the row back for the next sync.
+        const job = this._crypto.encrypt(value).then((sealed) => {
+            // A remove or logout can land while encrypt is in flight. The same
+            // can land after this check and before the put: IndexedDB serializes
+            // the two, so the write would run after the delete and restore the
+            // row. The guard runs under that mutex, immediately before the put.
             if (this._wiping || this._sealTokens.get(id) !== token) {
                 return;
             }
-            await this._idb.write(table, key, sealed);
+            return this._idb.write(table, key, sealed, () => {
+                return !this._wiping && this._sealTokens.get(id) === token;
+            });
         });
         this._pendingPersists = this._pendingPersists.then(() => job, () => job);
         return job;

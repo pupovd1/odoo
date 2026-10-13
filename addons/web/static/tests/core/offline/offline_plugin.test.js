@@ -470,6 +470,57 @@ test("scheduleORM", async () => {
     ]);
 });
 
+test("remove during a sealed write does not restore the row", async () => {
+    const setOffline = mockOffline();
+
+    await makeTestApp();
+    const offline = getService(OfflinePlugin);
+    await offline._loaded;
+    await setOffline(true);
+
+    const started = Promise.withResolvers();
+    const writeGate = Promise.withResolvers();
+    let blocked = false;
+    const originalWrite = offline._idb.write.bind(offline._idb);
+    offline._idb.write = (table, key, value, guard) => {
+        if (table === OfflinePlugin.ORM_SYNC_TABLE_NAME && key === "gone" && !blocked) {
+            blocked = true;
+            started.resolve();
+            return writeGate.promise.then(() => originalWrite(table, key, value, guard));
+        }
+        return originalWrite(table, key, value, guard);
+    };
+
+    offline.scheduleORM("partner", "unlink", [[1]], {}, {
+        id: "gone",
+        extras: { timeStamp: 1 },
+    });
+    await started.promise;
+    offline.removeScheduledORM("gone");
+    writeGate.resolve();
+    await offline._flushPersists();
+
+    expect(offline._ormToSync().gone).toBe(undefined);
+    expect(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).some(
+            (row) => row.key === "gone"
+        )
+    ).toBe(false);
+
+    offline.scheduleORM("partner", "unlink", [[2]], {}, {
+        id: "gone",
+        extras: { timeStamp: 2 },
+    });
+    await offline._flushPersists();
+    expect(offline._ormToSync().gone.value.args).toEqual([[2]]);
+    const stored = await offline._crypto.decrypt(
+        (await offline._idb.getAllEntries(OfflinePlugin.ORM_SYNC_TABLE_NAME)).find(
+            (row) => row.key === "gone"
+        ).value
+    );
+    expect(stored.args).toEqual([[2]]);
+});
+
 test("queued ORM entry stored without extras still syncs", async () => {
     const setOffline = mockOffline();
     onRpc("partner", "create", ({ args }) => {

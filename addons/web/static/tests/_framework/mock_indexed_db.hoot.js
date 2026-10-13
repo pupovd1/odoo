@@ -63,8 +63,14 @@ export function mockIndexedDBFactory(name, { fn }) {
                 );
             }
 
-            async write(table, key, value) {
+            async write(table, key, value, guard) {
+                // Same contract as IndexedDB.write: `guard` runs inside the mutex,
+                // immediately before the put. A delete queued earlier has already
+                // landed, so a false guard must not put the row back.
                 return this.mutex.exec(() => {
+                    if (guard && !guard()) {
+                        return;
+                    }
                     const items = Array.isArray(key) ? key : [{ key, value }];
                     if (!(table in dbs[this.name])) {
                         dbs[this.name][table] = {};

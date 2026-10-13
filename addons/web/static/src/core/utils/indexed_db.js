@@ -104,21 +104,28 @@ export class IndexedDB {
     }
 
     /**
-     * Write data or multiple data into the given table in the same transaction
+     * Write data or multiple data into the given table in the same transaction.
+     *
+     * `guard`, when given, runs inside the database mutex immediately before the
+     * put. A delete queued earlier has already landed, and a delete queued while
+     * this write waits cannot run until the put returns. Returning false skips
+     * the write so a removed row is not put back.
      *
      * @param {string} table
      * @param {string|Array} key : string|Array if it's an Array, it's an Array of object with key/values
      * @param  {any} value
+     * @param {() => boolean} [guard]
      * @returns {Promise}
      */
-    async write(table, key, value) {
+    async write(table, key, value, guard) {
         this._tables.add(table);
         return this.mutex.exec(() =>
             this._execute((db) => {
-                if (db) {
-                    const items = Array.isArray(key) ? key : [{ key, value }];
-                    return this._write(db, table, items);
+                if (!db || (guard && !guard())) {
+                    return;
                 }
+                const items = Array.isArray(key) ? key : [{ key, value }];
+                return this._write(db, table, items);
             })
         );
     }

@@ -256,7 +256,8 @@ const FORM_ARCH = `
                 data-available-offline="" invisible="type == 'lead'"/>
             <button name="action_convert_to_opportunity" string="Convert to Opportunity" type="object"
                 data-available-offline="" invisible="type == 'opportunity'"/>
-            <button name="action_set_lost" string="Lost" type="object" data-available-offline=""
+            <button name="%(crm.crm_lead_lost_action)d" string="Lost" type="action"
+                data-available-offline="" context="{'offline_method': 'action_set_lost'}"
                 invisible="won_status != 'pending'"/>
             <button name="action_restore" string="Restore" type="object" data-available-offline=""
                 invisible="won_status != 'lost'"/>
@@ -526,7 +527,7 @@ describe("CRM offline end to end", () => {
         expect(".o_field_widget[name=meeting_state] input").toHaveValue("scheduled");
 
         await disconnect(setOffline);
-        await contains("button[name=action_set_lost]").click();
+        await contains("button", { text: "Lost" }).click();
         expect(ormMethods()).toInclude("action_set_lost");
         await reconnect(setOffline);
         await expect.waitForSteps(["lost"]);

@@ -16,7 +16,7 @@ import {
     useListener,
     useProps,
 } from "@odoo/owl";
-import { OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { isOfflineTempId, OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { RPCError } from "@web/core/network/rpc";
 import { extractFieldsFromArchInfo } from "@web/model/relational_model/utils";
 import { useSetupAction } from "@web/search/action_hook";
@@ -225,7 +225,9 @@ export class KanbanQuickCreateController extends Component {
         }
         this.state.disabled = true;
         const { resId, isValid } = await this.save();
-        if (resId) {
+        // A temp id means the create was queued. Reloading the quick create
+        // would onchange again, and inserting the card would read a non-numeric id.
+        if (resId && !isOfflineTempId(resId)) {
             this.props.onValidate(resId, mode);
             if (mode === "add") {
                 await this.model.load({ resId: false });
@@ -235,11 +237,14 @@ export class KanbanQuickCreateController extends Component {
             this.state.disabled = false;
             return true;
         } else {
-            if (this.offlinePlugin.isOffline() && isValid) {
+            // Already queued for sync. Callers treat false as a failed save and
+            // block leaving the view or opening another column.
+            const queued = Boolean(isOfflineTempId(resId) && isValid);
+            if (queued || (this.offlinePlugin.isOffline() && isValid)) {
                 this.props.quickCreateState.closeQuickCreate();
             }
             this.state.disabled = false;
-            return false;
+            return queued;
         }
     }
 
