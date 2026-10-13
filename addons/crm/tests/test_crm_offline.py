@@ -354,6 +354,11 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
         self.assertEqual(icon.status_code, 200)
         self.assertEqual(icon.headers['Content-Type'], 'image/png')
 
+        # crm only extends the shortcuts (and keeps the share target): no route,
+        # service worker, offline page or icon of its own
+        for name in ('webmanifest', 'service_worker', 'offline', '_get_webmanifest',
+                     '_get_service_worker_content', '_icon_path', 'scoped_app_manifest'):
+            self.assertNotIn(name, vars(CrmWebManifest))
         self.assertEqual(manifest['icons'], [
             {'src': '/web/static/img/odoo-icon-192x192.png', 'sizes': '192x192', 'type': 'image/png'},
             {'src': '/web/static/img/odoo-icon-512x512.png', 'sizes': '512x512', 'type': 'image/png'},
@@ -452,3 +457,30 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
             'user_id': self.user_admin.id,
         }])
         self.assertTrue(activity.date_deadline)
+
+    def test_offline_disabled_buttons_in_crm_archs(self):
+        """ Inventory rows enforced by the framework's rule (a <button> without
+        data-available-offline is disabled offline, re-enabled online: JS33) are
+        such buttons in the archs crm ships: team form and stat button (B71/C22,
+        B72/C23), partner stat button (B89), campaign form (B91), settings (B92,
+        B93, B94), the lost and scoring wizards (B96, B98). """
+        pls_update_action = self.env.ref('crm.crm_lead_pls_update_action')
+        cases = [
+            ('sales_team.crm_team_view_form', ['action_assign_leads', 'action_open_opportunities']),
+            ('base.view_partner_form', ['action_view_opportunity']),
+            ('utm.utm_campaign_view_form', ['action_redirect_to_leads_opportunities']),
+            ('base.res_config_settings_view_form', [
+                'crm.crm_recurring_plan_action', str(pls_update_action.id), 'action_crm_assign_leads',
+            ]),
+            ('crm.crm_lead_lost_view_form', ['action_lost_reason_apply']),
+            ('crm.crm_lead_pls_update_view_form', ['action_update_crm_lead_probabilities']),
+        ]
+        for view_xmlid, names in cases:
+            arch = etree.fromstring(self.env.ref(view_xmlid).get_combined_arch())
+            for name in names:
+                with self.subTest(view=view_xmlid, button=name):
+                    nodes = arch.xpath(f"//*[@name='{name}'][@type]")
+                    self.assertTrue(nodes)
+                    for node in nodes:
+                        self.assertEqual(node.tag, 'button')
+                        self.assertIsNone(node.get('data-available-offline'))

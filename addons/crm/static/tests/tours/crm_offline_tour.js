@@ -16,11 +16,9 @@ const LEAD = "Offline tour opportunity";
 const NEW_LEAD = "Lead created offline";
 const ACTIVITY = "Call back about the offer";
 
-/** Whether a call_kw request for model/method has completed. */
-function requested(model, method) {
-    return performance
-        .getEntriesByType("resource")
-        .some((entry) => entry.name.includes(`/web/dataset/call_kw/${model}/${method}`));
+/** Whether a request to this route has completed. */
+function requested(route) {
+    return performance.getEntriesByType("resource").some((entry) => entry.name.includes(route));
 }
 
 registry.category("web_tour.tours").add("crm_offline_tour", {
@@ -38,11 +36,14 @@ registry.category("web_tour.tours").add("crm_offline_tour", {
             content: "The lead, opened online",
             trigger: `.o_navbar_breadcrumbs .o_last_breadcrumb_item:contains(${LEAD})`,
             async run({ waitUntil }) {
-                // the activities and activity types the offline panel reads from the cache
+                // the activities and activity types the offline panel reads from the
+                // cache, and the chatter's data (an answer arriving after the switch
+                // would mark the app online again for a moment)
                 await waitUntil(
                     () =>
-                        requested("mail.activity", "search_read") &&
-                        requested("mail.activity.type", "search_read"),
+                        requested("/web/dataset/call_kw/mail.activity/search_read") &&
+                        requested("/web/dataset/call_kw/mail.activity.type/search_read") &&
+                        requested("/mail/store"),
                     { timeout: 10000 }
                 );
                 console.log(NETWORK_OFF);
@@ -72,6 +73,10 @@ registry.category("web_tour.tours").add("crm_offline_tour", {
             content: "Back to the pipeline, from the cache",
             trigger: ".o_navbar_breadcrumbs .o_back_button",
             run: "click",
+        },
+        {
+            content: "The edited lead waits in the queue: pending sync",
+            trigger: `.o_crm_mobile_card:contains(${LEAD}) .o_crm_pending_sync`,
         },
         {
             content: "New opens the quick create",
@@ -138,6 +143,29 @@ registry.category("web_tour.tours").add("crm_offline_tour", {
         },
         {
             content: "Shown as won at once",
+            trigger: ".o_form_view .ribbon:contains(Won)",
+        },
+        // nothing reached the server: the four writes wait in the framework's queue
+        {
+            content: "The offline indicator lists the queued calls",
+            trigger: ".o_menu_systray .o_offline_systray",
+            run: "click",
+        },
+        {
+            trigger: ".o_offline_systray_content",
+            run({ queryAll }) {
+                const queued = queryAll(".o_offline_systray_content .o_badge").length;
+                if (queued !== 4) {
+                    throw new Error(`${queued} calls queued instead of 4 (edit, create, activity, won)`);
+                }
+            },
+        },
+        {
+            trigger: ".o_offline_systray_content",
+            run: "press Escape",
+        },
+        {
+            content: "Back online",
             trigger: ".o_form_view .ribbon:contains(Won)",
             run() {
                 console.log(NETWORK_ON);

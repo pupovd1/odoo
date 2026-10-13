@@ -56,9 +56,13 @@ test("[Offline] lead properties: a definition access probe lost with the connect
     await runAllTimers();
     const offlinePlugin = getService(OfflinePlugin);
 
+    // the lead's property (its team's "Budget") is editable online
+    const budgetInput = ".o_field_widget[name=lead_properties] .o_property_field_value input";
+    expect(budgetInput).toHaveCount(1);
+
     // offline, the properties are read-only: no probe
     await setOffline(true);
-    expect(".o_field_widget[name=lead_properties]").toHaveCount(1);
+    expect(budgetInput).toHaveCount(0);
     expect.verifySteps([]);
 
     // a late answer says online while the network is still down: the field turns
@@ -78,5 +82,5 @@ test("[Offline] lead properties: a definition access probe lost with the connect
     await animationFrame();
     expect(offlinePlugin.isOffline()).toBe(false);
     expect.verifySteps([]);
-    expect(".o_field_widget[name=lead_properties]").toHaveCount(1);
+    expect(budgetInput).toHaveCount(1);
 });
