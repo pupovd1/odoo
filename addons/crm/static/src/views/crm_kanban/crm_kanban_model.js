@@ -5,6 +5,13 @@ export class CrmKanbanModel extends RelationalModel {
     setup(params, { effect }) {
         super.setup(...arguments);
         this.effect = effect;
+        // the stage the small-screen pipeline shows (CrmMobilePipeline), kept
+        // when the user comes back to the pipeline (e.g. from a lead)
+        this.mobileStage = params.state?.mobileStage;
+    }
+
+    exportState() {
+        return { ...super.exportState(), mobileStage: this.mobileStage };
     }
 }
 
@@ -13,7 +20,8 @@ export class CrmKanbanDynamicGroupList extends RelationalModel.DynamicGroupList 
      * @override
      *
      * If the kanban view is grouped by stage_id check if the lead is won and display
-     * a rainbowman message if that's the case.
+     * a rainbowman message if that's the case. Offline the move is queued and the
+     * lookup is skipped.
      */
     async moveRecords(recordIds, refId, targetGroupId) {
         const targetGroup = this.groups.find((group) => group.id === targetGroupId);
@@ -24,7 +32,12 @@ export class CrmKanbanDynamicGroupList extends RelationalModel.DynamicGroupList 
 
         await super.moveRecords(...arguments);
 
-        if (targetGroup && movedLeads.length && this.groupByField.name === "stage_id") {
+        if (
+            targetGroup &&
+            movedLeads.length &&
+            this.groupByField.name === "stage_id" &&
+            !this.model.offlinePlugin.isOffline()
+        ) {
             // a single message, even when several leads were moved at once
             await checkRainbowmanMessage(this.model.orm, this.model.effect, movedLeads[0].resId);
         }

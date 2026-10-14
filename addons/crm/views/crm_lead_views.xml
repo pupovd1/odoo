@@ -6,16 +6,19 @@
             <field name="arch" type="xml">
                 <form class="o_lead_opportunity_form" js_class="crm_form">
                     <header>
+                        <!-- Won and Restore are queued offline (crm_form); a lead created offline
+                             has no id yet: its Won button is unavailable offline until synced -->
                         <button name="action_set_won_rainbowman" string="Won"
                             type="object" class="oe_highlight" data-hotkey="w"
+                            data-available-offline="1" data-crm-offline-needs-id="1"
                             invisible="won_status == 'won' or type == 'lead' or not active"/>
                         <button name="action_convert_to_opportunity" string="Convert to Opportunity" type="object"
                             class="oe_highlight" invisible="type == 'opportunity' or not active" data-hotkey="v"/>
                         <button name="action_restore" string="Restore" type="object" data-hotkey="x"
-                            invisible="won_status != 'lost'"/>
+                            data-available-offline="1" invisible="won_status != 'lost'"/>
                         <button name="%(crm.crm_lead_lost_action)d" string="Lost" type="action" data-hotkey="l"
                             invisible="won_status != 'pending' or not active"/>
-                        <field name="stage_id" widget="rotting_statusbar_duration"
+                        <field name="stage_id" widget="crm_statusbar"
                             options="{'clickable': '1', 'fold_field': 'fold'}"
                             domain="['|', ('team_ids', 'in', team_id), ('team_ids', '=', False)]"
                             invisible="type == 'lead'" readonly="won_status == 'lost' or not active"/>
@@ -88,7 +91,7 @@
                                     <label for="probability" class="d-inline-block"/>
                                     <a class="border-0 mx-2 p-0 mb-1 mb-md-0 btn btn-light"
                                         name="action_set_automated_probability"
-                                        role="button" type="object"
+                                        role="button" type="object" data-crm-offline-disable="1"
                                         invisible="is_automated_probability or won_status == 'lost'">
                                             <img class="o_lead_opportunity_form_AI_switch_img"
                                                 title="Switch to AI-computed probabilities"
@@ -137,7 +140,7 @@
                                         <span> %</span>
                                         <a class="btn btn-link p-0"
                                             name="action_set_automated_probability"
-                                            role="button" type="object"
+                                            role="button" type="object" data-crm-offline-disable="1"
                                             invisible="is_automated_probability or won_status == 'lost'">
                                             <img class="o_lead_opportunity_form_AI_switch_img mx-1"
                                                 title="Switch to AI-computed probabilities"
@@ -248,6 +251,7 @@
                         <div class="d-flex">
                             <field name="lead_properties" nolabel="1" columns="2"/>
                         </div>
+                        <widget name="crm_offline_activities"/>
                         <notebook>
                             <page string="Notes" name="internal_notes">
                                 <field name="description" placeholder="Add a description..." options="{'collaborative': true}" />
@@ -501,7 +505,7 @@
             <field name="priority" eval="1"/>
             <field name="arch" type="xml">
                 <kanban  highlight_color="color" default_group_by="stage_id" class="o_kanban_small_column o_opportunity_kanban" on_create="quick_create" quick_create_view="crm.quick_create_opportunity_form"
-                    archivable="false" sample="1" js_class="crm_kanban">
+                    archivable="false" sample="1" js_class="crm_kanban" mobile_pipeline="1">
                     <field name="stage_id" options='{"group_by_tooltip": {"requirements": "Description"}}'/>
                     <field name="probability"/>
                     <field name="active"/>
@@ -572,6 +576,8 @@
                 <xpath expr="//kanban" position="attributes">
                     <attribute name="default_group_by">date_deadline</attribute>
                     <attribute name="js_class">forecast_kanban</attribute>
+                    <!-- the forecast's own renderer has no small-screen pipeline -->
+                    <attribute name="mobile_pipeline"/>
                 </xpath>
                 <xpath expr="//kanban" position="inside">
                     <field name="date_deadline"/>

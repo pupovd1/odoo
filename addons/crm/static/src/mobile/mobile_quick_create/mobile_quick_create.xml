@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="crm.MobileQuickCreate">
+        <div class="o_crm_mobile_quick_create d-flex flex-column gap-2 p-3">
+            <h4 class="mb-1">New lead</h4>
+            <input type="text" name="name" class="form-control" data-available-offline=""
+                placeholder="Lead name" aria-label="Lead name" required=""
+                t-att-value="this.state.name" t-on-input="(ev) => this.onInput('name', ev)"/>
+            <input type="text" name="contact_name" class="form-control" data-available-offline=""
+                placeholder="Contact name" aria-label="Contact name"
+                t-att-value="this.state.contact_name" t-on-input="(ev) => this.onInput('contact_name', ev)"/>
+            <input type="tel" name="phone" class="form-control" data-available-offline=""
+                placeholder="Phone" aria-label="Phone"
+                t-att-value="this.state.phone" t-on-input="(ev) => this.onInput('phone', ev)"/>
+            <input type="email" name="email_from" class="form-control" data-available-offline=""
+                placeholder="Email" aria-label="Email"
+                t-att-value="this.state.email_from" t-on-input="(ev) => this.onInput('email_from', ev)"/>
+            <input type="text" inputmode="decimal" name="expected_revenue" class="form-control" data-available-offline=""
+                placeholder="Expected revenue" aria-label="Expected revenue"
+                t-att-class="{ 'is-invalid': !this.isRevenueValid }" t-att-aria-invalid="!this.isRevenueValid"
+                t-att-value="this.state.expected_revenue" t-on-input="(ev) => this.onInput('expected_revenue', ev)"/>
+            <select name="stage_id" class="form-select" data-available-offline="" aria-label="Stage"
+                t-on-change="(ev) => this.onStageChange(ev)">
+                <option t-foreach="this.props.stages" t-as="stage" t-key="stage.id"
+                    t-att-value="stage.id" t-att-selected="stage.id === this.state.stage_id" t-out="stage.name"/>
+            </select>
+            <button type="button" class="btn btn-primary o_crm_mobile_quick_create_add mt-1" data-available-offline=""
+                t-att-disabled="!this.canAdd" t-on-click="() => this.add()">
+                Add
+            </button>
+        </div>
+    </t>
+
+</templates>

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <!-- small screens: the pipeline grouped by stage, one stage at a time (CrmMobilePipeline) -->
+    <t t-name="crm.KanbanRenderer" t-inherit="web.KanbanRenderer" t-inherit-mode="primary">
+        <xpath expr="//div[hasclass('o_kanban_renderer')]/t[@t-foreach='this.getGroupsOrRecords()']" position="replace">
+            <CrmMobilePipeline t-if="this.isMobilePipeline" list="this.props.list"
+                openRecord="this.props.openRecord" sumField="this.mobileSumField"/>
+            <t t-else="">$0</t>
+        </xpath>
+        <xpath expr="//div[hasclass('o_kanban_renderer')]/t[@t-if='this.props.list.isGrouped']" position="attributes">
+            <attribute name="t-if">this.props.list.isGrouped and !this.isMobilePipeline</attribute>
+        </xpath>
+        <xpath expr="//div[hasclass('o_kanban_renderer')]/t[@t-if='this.props.list.isGrouped and !this.isMobilePipeline']/following-sibling::t[1]" position="attributes">
+            <attribute name="t-else"/>
+            <attribute name="t-elif">!this.props.list.isGrouped</attribute>
+        </xpath>
+    </t>
+
+</templates>

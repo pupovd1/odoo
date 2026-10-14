@@ -1,4 +1,4 @@
-import { Component, proxy } from "@odoo/owl";
+import { Component, proxy, useOnChange } from "@odoo/owl";
 import { Dropdown } from "@web/core/dropdown/dropdown";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
@@ -10,6 +10,7 @@ import { user } from "@web/core/user";
 import { ConfirmationDialog } from "@web/core/confirmation_dialog/confirmation_dialog";
 import { ErrorDialog } from "@web/core/errors/error_dialogs";
 import { PromoteMailPluginsDialog } from "@crm/components/promote_mail_plugins_dialog/promote_mail_plugins_dialog";
+import { useCrmOffline } from "@crm/mobile/offline_hooks";
 
 export const MODULE_STATUS = {
     NOT_INSTALLED: "NOT_INSTALLED",
@@ -26,6 +27,7 @@ export class LeadGenerationDropdown extends Component {
         this.orm = useService("orm");
         this.dialogs = useService("dialog");
         this.action = useService("action");
+        this.crmOffline = useCrmOffline();
         this.newContentText = {
             FAILED_TO_INSTALL: _t('Failed to install "%(module_name)s"'),
             INSTALLING: _t('Installing "%(module_name)s"'),
@@ -99,6 +101,11 @@ export class LeadGenerationDropdown extends Component {
             ],
         });
         this.dropdown = useDropdownState();
+        useOnChange(
+            () => [this.crmOffline.isOffline()],
+            (isOffline) => isOffline && this.dropdown.close(),
+            { initialRun: false }
+        );
         useHotkey("escape", () => this.dropdown.close(), {
             isAvailable: () => this.dropdown.isOpen,
         });
@@ -118,6 +125,11 @@ export class LeadGenerationDropdown extends Component {
     }
 
     async toggleDropdown() {
+        // Offline the module lookup can't run and nothing can be installed or
+        // imported: the dropdown stays closed (its toggler is disabled offline).
+        if (this.crmOffline.isOffline()) {
+            return;
+        }
         for (const dropdownContentElement in this.state.dropdownContentElements) {
             this.resetDescription(this.state.dropdownContentElements[dropdownContentElement]);
         }
@@ -180,6 +192,9 @@ export class LeadGenerationDropdown extends Component {
     }
 
     onClickAction(element) {
+        if (this.crmOffline.isOffline()) {
+            return;
+        }
         if (!element.hasAccess) {
             return this.requestAccess(
                 element.moduleName,

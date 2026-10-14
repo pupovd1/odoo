@@ -1,0 +1,30 @@
+// The small-screen pipeline (CrmMobilePipeline): it fills the kanban renderer (which doesn't
+// scroll vertically on small screens), its header stays and the stage below it scrolls; touch
+// targets of at least 44 x 44 px; horizontal swipes are left to the page (stage navigation)
+// while vertical scrolling stays native.
+.o_crm_mobile_pipeline {
+    height: 100%;
+    min-height: 0;
+
+    .o_crm_mobile_prev,
+    .o_crm_mobile_next,
+    .o_crm_mobile_card_open,
+    .o_crm_mobile_load_more {
+        min-width: 44px;
+        min-height: 44px;
+    }
+
+    .o_crm_mobile_stage {
+        min-height: 0;
+        overflow-y: auto;
+        touch-action: pan-y;
+    }
+}
+
+.o_crm_mobile_quick_create {
+    .form-control,
+    .form-select,
+    .btn {
+        min-height: 44px;
+    }
+}

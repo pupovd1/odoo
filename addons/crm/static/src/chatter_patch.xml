@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-inherit="mail.Chatter" t-inherit-mode="extension">
+        <xpath expr="//div[hasclass('o-mail-Chatter-topbar')]" position="after">
+            <div t-if="this.isCrmLeadReadonlyOffline" class="o_crm_chatter_offline small text-muted px-3 py-1">
+                <i class="oi me-1" data-icon="link_off" role="img"/>Offline: the chatter is read-only until the connection is back.
+            </div>
+        </xpath>
+    </t>
+
+</templates>

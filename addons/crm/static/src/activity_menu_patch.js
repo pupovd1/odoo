@@ -1,8 +1,14 @@
 import { Domain } from "@web/core/domain";
 import { ActivityMenu } from "@mail/core/web/activity_menu";
 import { patch } from "@web/core/utils/patch";
+import { useCrmOffline } from "@crm/mobile/offline_hooks";
 
 patch(ActivityMenu.prototype, {
+    setup() {
+        super.setup(...arguments);
+        this.crmOffline = useCrmOffline();
+    },
+
     availableViews(group) {
         if (group.model === "crm.lead") {
             return [
@@ -18,10 +24,21 @@ patch(ActivityMenu.prototype, {
         return super.availableViews(...arguments);
     },
 
+    /**
+     * The CRM entry opens "My Activities" with its own filters, which aren't
+     * available offline: it is disabled while offline.
+     */
+    isCrmGroupDisabledOffline(group) {
+        return group.model === "crm.lead" && this.crmOffline.isOffline();
+    },
+
     openActivityGroup(group, filter = "all", newWindow) {
         // fetch the data from the button otherwise fetch the ones from the parent (.o_ActivityMenuView_activityGroup).
         const context = {};
         if (group.model === "crm.lead") {
+            if (this.isCrmGroupDisabledOffline(group)) {
+                return;
+            }
             this.dropdown.close();
             if (filter === "my" || filter === "all") {
                 context["search_default_activities_overdue"] = 1;

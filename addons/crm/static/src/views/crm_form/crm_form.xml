@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="crm.FormView" t-inherit="web.FormView" t-inherit-mode="primary">
+        <xpath expr="//t[@t-component='this.props.Renderer'][@archInfo='this.archInfo']" position="attributes">
+            <attribute name="t-if">!this.model.couldNotLoadRootOffline</attribute>
+        </xpath>
+        <xpath expr="//t[@t-component='this.props.Renderer'][@archInfo='this.archInfo']" position="after">
+            <CrmOfflineFormHelper t-else=""/>
+        </xpath>
+        <!-- the placeholder of a lead not available offline: no smart buttons, actions or save -->
+        <xpath expr="//t[@t-if='!this.ui.isSmall and this.buttonBoxTemplate']" position="attributes">
+            <attribute name="t-if">!this.ui.isSmall and this.buttonBoxTemplate and !this.model.unavailableResId</attribute>
+        </xpath>
+        <xpath expr="//t[@t-if='this.ui.isSmall and this.buttonBoxTemplate']" position="attributes">
+            <attribute name="t-if">this.ui.isSmall and this.buttonBoxTemplate and !this.model.unavailableResId</attribute>
+        </xpath>
+        <xpath expr="//CogMenu" position="attributes">
+            <attribute name="t-if">!this.model.unavailableResId</attribute>
+        </xpath>
+        <xpath expr="//FormStatusIndicator" position="attributes">
+            <attribute name="t-if">!this.model.unavailableResId</attribute>
+        </xpath>
+    </t>
+
+    <t t-name="crm.OfflineFormHelper">
+        <div class="o_view_nocontent o_crm_offline_form_helper">
+            <div class="o_nocontent_help">
+                <p><i class="oi oi-4x opacity-75" data-icon="link_off"/></p>
+                <p>There is no data to display offline for this lead: it wasn't opened online.</p>
+                <p class="small text-muted">It opens here once the connection is back.</p>
+            </div>
+        </div>
+    </t>
+
+</templates>
