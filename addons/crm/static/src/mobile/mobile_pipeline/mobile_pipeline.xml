@@ -25,7 +25,8 @@
             <div class="o_crm_mobile_stage flex-grow-1 px-2 py-2"
                 t-on-pointerdown="(ev) => this.onPointerDown(ev)"
                 t-on-pointerup="(ev) => this.onPointerUp(ev)"
-                t-on-pointercancel="() => this.swipeStart = null">
+                t-on-pointercancel="() => this.swipeStart = null"
+                t-on-click.capture="(ev) => this.onStageClick(ev)">
                 <t t-if="this.isUnavailable">
                     <OfflineActionHelper/>
                 </t>

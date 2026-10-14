@@ -39,6 +39,7 @@ export class CrmMobilePipeline extends Component {
         this.state = proxy({ stageValue: this.props.list.model.mobileStage, unavailableGroupIds: [] });
         this.loadingGroupIds = new Set();
         this.swipeStart = null;
+        this.suppressClick = false;
         this.quickCreate = usePopover(CrmMobileQuickCreate, { useBottomSheet: true });
         // the control panel's New button (see the crm_kanban controller)
         useBus(this.props.list.model.bus, "CRM:MOBILE_QUICK_CREATE", () => this.openQuickCreate());
@@ -231,6 +232,10 @@ export class CrmMobilePipeline extends Component {
     }
 
     onPointerDown(ev) {
+        // The click of a swipe, when the browser sends one, comes before the
+        // next pointerdown. A gesture that did not click must not swallow the
+        // next tap.
+        this.suppressClick = false;
         this.swipeStart = { x: ev.clientX, y: ev.clientY };
     }
 
@@ -244,6 +249,18 @@ export class CrmMobilePipeline extends Component {
         const dy = ev.clientY - start.y;
         if (Math.abs(dx) >= SWIPE_DISTANCE && Math.abs(dx) > 2 * Math.abs(dy)) {
             this.goTo(this.stageIndex + (dx < 0 ? 1 : -1));
+            // touch-action: pan-y leaves this gesture to the page, so the card
+            // under the pointer (a button) still receives the click and opens.
+            this.suppressClick = true;
         }
+    }
+
+    onStageClick(ev) {
+        if (!this.suppressClick) {
+            return;
+        }
+        this.suppressClick = false;
+        ev.preventDefault();
+        ev.stopPropagation();
     }
 }

@@ -26,7 +26,7 @@
                     t-att-value="stage.id" t-att-selected="stage.id === this.state.stage_id" t-out="stage.name"/>
             </select>
             <button type="button" class="btn btn-primary o_crm_mobile_quick_create_add mt-1" data-available-offline=""
-                t-att-disabled="!this.canAdd" t-on-click="() => this.add()">
+                t-att-disabled="!this.canAdd or this.state.adding" t-on-click="() => this.add()">
                 Add
             </button>
         </div>

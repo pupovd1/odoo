@@ -24,6 +24,7 @@ export class CrmMobileQuickCreate extends Component {
             email_from: "",
             expected_revenue: "",
             stage_id: this.props.stageId || this.props.stages[0]?.id || false,
+            adding: false,
         });
     }
 
@@ -74,12 +75,22 @@ export class CrmMobileQuickCreate extends Component {
         this.state.stage_id = Number(ev.target.value);
     }
 
+    /**
+     * Adds the lead, then closes the sheet. Closing first would discard the
+     * typed values when the server refuses the create (validation, access, a
+     * constraint): nothing would be left to correct and retry.
+     */
     async add() {
-        if (!this.canAdd) {
+        if (!this.canAdd || this.state.adding) {
             return;
         }
-        const values = this.values;
+        this.state.adding = true;
+        try {
+            await this.props.onAdd(this.values);
+        } catch (error) {
+            this.state.adding = false;
+            throw error;
+        }
         this.props.close();
-        await this.props.onAdd(values);
     }
 }
