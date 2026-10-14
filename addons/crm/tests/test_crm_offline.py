@@ -308,7 +308,7 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
         (read-only and not reorderable offline). """
         with file_open('crm/static/src/views/relational_model_patch.js') as patch_file:
             source = patch_file.read()
-        online_only = re.findall(r'^\s+"([\w.]+)",$', source.split('CRM_ONLINE_ONLY_ACTIONS')[1].split('];')[0], re.M)
+        online_only = re.findall(r'["\']([\w]+\.[\w.]+)["\']', source.split('CRM_ONLINE_ONLY_ACTIONS')[1].split(']')[0])
         self.assertEqual(sorted(online_only), sorted([
             'sales_team.crm_team_action_pipeline',
             'crm.crm_activity_report_action',
