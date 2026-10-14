@@ -24,6 +24,7 @@ export class CrmMobileQuickCreate extends Component {
             email_from: "",
             expected_revenue: "",
             stage_id: this.props.stageId || this.props.stages[0]?.id || false,
+            adding: false,
         });
     }
 
@@ -51,7 +52,7 @@ export class CrmMobileQuickCreate extends Component {
     }
 
     get canAdd() {
-        return Boolean(this.state.name.trim()) && this.isRevenueValid;
+        return !this.state.adding && Boolean(this.state.name.trim()) && this.isRevenueValid;
     }
 
     /** The values of the new lead, as the server's create takes them. */
@@ -74,12 +75,22 @@ export class CrmMobileQuickCreate extends Component {
         this.state.stage_id = Number(ev.target.value);
     }
 
+    /**
+     * Adds the lead, then closes the sheet. When the server refuses the lead (a
+     * lost connection queues it instead), the sheet stays open with the values
+     * typed, to correct them and add again.
+     */
     async add() {
         if (!this.canAdd) {
             return;
         }
-        const values = this.values;
+        this.state.adding = true;
+        try {
+            await this.props.onAdd(this.values);
+        } catch (error) {
+            this.state.adding = false;
+            throw error;
+        }
         this.props.close();
-        await this.props.onAdd(values);
     }
 }

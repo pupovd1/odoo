@@ -1,5 +1,5 @@
 import { defineMailModels } from "@mail/../tests/mail_test_helpers";
-import { expect, test } from "@odoo/hoot";
+import { expect, mockTouch, test } from "@odoo/hoot";
 import {
     animationFrame,
     pointerDown,
@@ -19,6 +19,7 @@ import {
     defineParams,
     getService,
     makeMockServer,
+    makeServerError,
     MockServer,
     mountWithCleanup,
     onRpc,
@@ -568,4 +569,142 @@ test("[Offline] [Mobile] Load more reads the rest of a long stage online; offlin
     expect.verifySteps(["crm.lead/web_search_read"]);
     expect(".o_crm_mobile_card").toHaveCount(5);
     expect(".o_crm_mobile_load_more").toHaveCount(0);
+});
+
+test.tags("mobile");
+test("[Mobile] quick create online: a lead the server refuses keeps the sheet open with the values typed", async () => {
+    expect.errors(1);
+    const answer = Promise.withResolvers();
+    let refuse = true;
+    onRpc("crm.lead", "create", async () => {
+        expect.step("create");
+        if (refuse) {
+            await answer.promise;
+            throw makeServerError({ type: "ValidationError", message: "Incompatible companies on records" });
+        }
+    });
+    await openPipeline();
+    await quickCreate({ stageId: "1" });
+    await expect.waitForSteps(["create"]);
+    // the create is under way: the sheet waits for it, Add can't be pressed twice
+    expect(".o_bottom_sheet .o_crm_mobile_quick_create").toHaveCount(1);
+    expect(".o_crm_mobile_quick_create_add").not.toBeEnabled();
+
+    // refused (not a lost connection): the server's error shows, nothing is queued,
+    // and the sheet stays open with the values typed, to correct them and add again
+    answer.resolve();
+    await waitFor(".o_error_dialog");
+    expect(".o_error_dialog").toHaveText(/Incompatible companies on records/);
+    expect.verifyErrors(["Incompatible companies on records"]);
+    await contains(".o_error_dialog .o-default-button").click();
+    expect(queuedCalls()).toEqual([]);
+    expect(".o_bottom_sheet .o_crm_mobile_quick_create").toHaveCount(1);
+    expect(".o_crm_mobile_quick_create [name=name]").toHaveValue("Lead created on the go");
+    expect(".o_crm_mobile_quick_create [name=contact_name]").toHaveValue("Ana Road");
+    expect(".o_crm_mobile_quick_create [name=phone]").toHaveValue("+32 470 00 00 00");
+    expect(".o_crm_mobile_quick_create [name=email_from]").toHaveValue("ana@example.com");
+    expect(".o_crm_mobile_quick_create [name=expected_revenue]").toHaveValue("1500");
+    expect(".o_crm_mobile_quick_create [name=stage_id]").toHaveValue("1");
+    expect(".o_crm_mobile_quick_create_add").toBeEnabled();
+
+    // accepted this time: created once, and the sheet closes
+    refuse = false;
+    await contains(".o_crm_mobile_quick_create_add").click();
+    await expect.waitForSteps(["create"]);
+    await animationFrame();
+    expect(".o_bottom_sheet").toHaveCount(0);
+    expect(cardNames()).toEqual(["Office chairs", "Desks for the new office", "Lead created on the go"]);
+    expect(MockServer.env["crm.lead"].search_count([["name", "=", "Lead created on the go"]])).toBe(1);
+});
+
+test.tags("mobile");
+test("[Mobile] quick create online: once the lead is created, the sheet closes even if the pipeline's reload fails", async () => {
+    expect.errors(1);
+    let created = false;
+    onRpc("crm.lead", "create", () => {
+        expect.step("create");
+        created = true;
+    });
+    onRpc("crm.lead", "web_read_group", () => {
+        if (created) {
+            throw makeServerError({ message: "The pipeline could not be read" });
+        }
+    });
+    await openPipeline();
+    await quickCreate({ stageId: "1" });
+    await expect.waitForSteps(["create"]);
+    await waitFor(".o_error_dialog");
+    expect.verifyErrors(["The pipeline could not be read"]);
+    // the lead exists: nothing is left to add again (no second lead), nothing is queued
+    expect(".o_bottom_sheet").toHaveCount(0);
+    expect(queuedCalls()).toEqual([]);
+    expect(MockServer.env["crm.lead"].search_count([["name", "=", "Lead created on the go"]])).toBe(1);
+});
+
+test.tags("mobile");
+test("[Mobile] a swipe made with a mouse moves to the next stage without opening the lead it starts on", async () => {
+    // a mouse on a small window: unlike a touch swipe, the swipe ends with a click
+    // on the card it started on
+    mockTouch(false);
+    onRpc("crm.lead", "web_read", ({ args }) => {
+        expect.step(["open", args[0]]);
+    });
+    await openPipeline();
+    const card = ".o_crm_mobile_stage .o_crm_mobile_card_open:first";
+    await pointerDown(card, { position: { x: 300, y: 10 }, relative: true });
+    await pointerUp(card, { position: { x: 40, y: 12 }, relative: true });
+    await runAllTimers();
+    await animationFrame();
+    // the lead isn't opened (not even read): the pipeline shows the next stage
+    expect.verifySteps([]);
+    expect(".o_form_view").toHaveCount(0);
+    expect(stageName()).toBe("Proposition");
+
+    // a click on a card still opens its lead
+    await contains(".o_crm_mobile_stage .o_crm_mobile_card_open").click();
+    await expect.waitForSteps([["open", [3]]]);
+    expect(".o_form_view .o_field_widget[name=name] input").toHaveValue("Meeting room");
+});
+
+test.tags("mobile");
+test("[Mobile] after a touch swipe, a tap or Enter on a lead still opens it", async () => {
+    await openPipeline();
+    const stage = ".o_crm_mobile_stage";
+    // a touch swipe sends no click: nothing is left to stop afterwards
+    await pointerDown(stage, { position: { x: 300, y: 20 }, relative: true });
+    await pointerUp(stage, { position: { x: 40, y: 30 }, relative: true });
+    await animationFrame();
+    expect(stageName()).toBe("Proposition");
+    await contains(".o_crm_mobile_stage .o_crm_mobile_card_open").click();
+    expect(".o_form_view .o_field_widget[name=name] input").toHaveValue("Meeting room");
+
+    // back in the pipeline, swipe again, then open a lead from the keyboard
+    await contains(".o_back_button").click();
+    expect(stageName()).toBe("Proposition");
+    await pointerDown(stage, { position: { x: 40, y: 20 }, relative: true });
+    await pointerUp(stage, { position: { x: 300, y: 25 }, relative: true });
+    await animationFrame();
+    expect(stageName()).toBe("New");
+    queryAll(".o_crm_mobile_card_open")[0].focus();
+    await press("Enter");
+    await animationFrame();
+    expect(".o_form_view .o_field_widget[name=name] input").toHaveValue("Office chairs");
+});
+
+test.tags("mobile");
+test("[Mobile] quick create online: a create lost with the connection is queued, and the sheet closes", async () => {
+    onRpc("/web/dataset/call_kw/crm.lead/create", () => {
+        expect.step("create lost");
+        return new Response("", { status: 502 });
+    });
+    await openPipeline();
+    await quickCreate({ stageId: "1" });
+    await expect.waitForSteps(["create lost"]);
+    await animationFrame();
+    expect(".o_bottom_sheet").toHaveCount(0);
+    expect(queuedMethods()).toEqual(["crm.lead.create"]);
+    expect(queuedCalls()[0].args).toEqual([[{ ...createdValues, stage_id: 1 }]]);
+    expect(".o_crm_mobile_pending_card .o_crm_mobile_card_name").toHaveText("Lead created on the go");
+    expect(".o_dialog").toHaveCount(0);
+    expect(MockServer.env["crm.lead"].search_count([["name", "=", "Lead created on the go"]])).toBe(0);
 });

@@ -39,6 +39,7 @@ export class CrmMobilePipeline extends Component {
         this.state = proxy({ stageValue: this.props.list.model.mobileStage, unavailableGroupIds: [] });
         this.loadingGroupIds = new Set();
         this.swipeStart = null;
+        this.swiped = false;
         this.quickCreate = usePopover(CrmMobileQuickCreate, { useBottomSheet: true });
         // the control panel's New button (see the crm_kanban controller)
         useBus(this.props.list.model.bus, "CRM:MOBILE_QUICK_CREATE", () => this.openQuickCreate());
@@ -193,7 +194,8 @@ export class CrmMobilePipeline extends Component {
     /**
      * Creates the lead online; offline (or when the connection drops), queues
      * the create in the framework's queue, with the pipeline's defaults (type,
-     * team...) as the server applies them online.
+     * team...) as the server applies them online. Rejects, nothing created or
+     * queued, when the server refuses the lead.
      */
     async addLead(values) {
         const list = this.props.list;
@@ -212,8 +214,9 @@ export class CrmMobilePipeline extends Component {
             }
             if (created) {
                 // created: never queued again, even if the reload is lost with the
-                // connection (the lead shows when the pipeline next loads)
-                await list.load().catch((error) => {
+                // connection (the lead shows when the pipeline next loads), nor
+                // added again: the quick create closes without waiting for the reload
+                list.load().catch((error) => {
                     if (!(error instanceof ConnectionLostError)) {
                         throw error;
                     }
@@ -232,6 +235,7 @@ export class CrmMobilePipeline extends Component {
 
     onPointerDown(ev) {
         this.swipeStart = { x: ev.clientX, y: ev.clientY };
+        this.swiped = false;
     }
 
     onPointerUp(ev) {
@@ -244,6 +248,20 @@ export class CrmMobilePipeline extends Component {
         const dy = ev.clientY - start.y;
         if (Math.abs(dx) >= SWIPE_DISTANCE && Math.abs(dx) > 2 * Math.abs(dy)) {
             this.goTo(this.stageIndex + (dx < 0 ? 1 : -1));
+            this.swiped = true;
+        }
+    }
+
+    /**
+     * Stops the click that ends a swipe made with a mouse or a pen (a touch
+     * swipe sends none), so that the swipe doesn't open the card it started on.
+     * A click from the keyboard (detail 0) never ends a swipe.
+     */
+    onStageClick(ev) {
+        if (this.swiped && ev.detail) {
+            this.swiped = false;
+            ev.preventDefault();
+            ev.stopPropagation();
         }
     }
 }
