@@ -25,6 +25,10 @@
                 <option t-foreach="this.props.stages" t-as="stage" t-key="stage.id"
                     t-att-value="stage.id" t-att-selected="stage.id === this.state.stage_id" t-out="stage.name"/>
             </select>
+            <div t-if="this.state.unconfirmed" class="o_crm_mobile_quick_create_unconfirmed alert alert-warning mb-0" role="alert">
+                The connection was lost before the server confirmed this lead: it may already be in the pipeline.
+                Check the pipeline once back online before adding it again.
+            </div>
             <button type="button" class="btn btn-primary o_crm_mobile_quick_create_add mt-1" data-available-offline=""
                 t-att-disabled="!this.canAdd" t-on-click="() => this.add()">
                 Add

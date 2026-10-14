@@ -677,6 +677,26 @@ class CrmLead(models.Model):
             partner_name = partner.parent_name
         return {'partner_name': partner_name or self.partner_name}
 
+    def _partner_sync_drop_force_saved(self, vals):
+        """ The lead form force-saves the lead's email and phone so that the
+        inverse methods propagate them to the partner. After a partner change
+        made offline, the partner's onchange didn't run: the client force-saves
+        both and lists them in the context key ``crm_partner_sync_force_saved``,
+        as it can't know whether the new partner has its own email or phone.
+        Done here as the onchange would have: when the new partner has its own
+        value, the lead takes it (compute) instead of the force-saved one;
+        otherwise the force-saved value is kept and propagated to the partner.
+
+        :param dict vals: values of a create or write, updated in place
+        """
+        force_saved = self.env.context.get('crm_partner_sync_force_saved')
+        if not force_saved or not vals.get('partner_id'):
+            return
+        partner = self.env['res.partner'].browse(vals['partner_id'])
+        for fname, partner_fname in (('email_from', 'email'), ('phone', 'phone')):
+            if fname in force_saved and partner[partner_fname]:
+                vals.pop(fname, None)
+
     def _get_partner_email_update(self, force_void=True):
         """Calculate if we should write the email on the related partner. When
         the email of the lead / partner is an empty string, we force it to False
@@ -730,6 +750,7 @@ class CrmLead(models.Model):
         for vals in vals_list:
             if vals.get('website'):
                 vals['website'] = self.env['res.partner']._clean_website(vals['website'])
+            self._partner_sync_drop_force_saved(vals)
         leads = super().create(vals_list)
 
         # handling a date_closed value if the lead is directly created in the won stage
@@ -760,6 +781,7 @@ class CrmLead(models.Model):
     def write(self, vals):
         if vals.get('website'):
             vals['website'] = self.env['res.partner']._clean_website(vals['website'])
+        self._partner_sync_drop_force_saved(vals)
 
         now = self.env.cr.now()
         stage_updated, stage_is_won = False, False

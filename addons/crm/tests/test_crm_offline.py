@@ -1,5 +1,6 @@
 # Part of Odoo. See LICENSE file for full copyright and licensing details.
 
+import re
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -7,8 +8,10 @@ from lxml import etree
 
 from odoo.tests import Form, HttpCase, tagged
 from odoo.tests.common import ChromeBrowser
+from odoo.tools import file_open
 
 from odoo.addons.crm.controllers.webmanifest import WebManifest as CrmWebManifest
+from odoo.addons.crm.models.mail_activity import MailActivity as CrmMailActivity
 from odoo.addons.crm.tests.common import TestCrmCommon
 from odoo.addons.mail.tests.common import mail_new_test_user
 from odoo.addons.web.controllers.webmanifest import WebManifest
@@ -91,37 +94,70 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
         self.assertFalse(partner.email)
         self.assertFalse(partner.phone)
 
+    def _online_partner_change(self, lead, partner):
+        """ The online flow of a partner change on the lead form: the partner's
+        onchange, then the save of CrmFormRecord (the changes, plus the email and
+        phone force-saved when the onchange's sync flags are set). """
+        lead_form = Form(lead)
+        lead_form.partner_id = partner
+        values = {'partner_id': partner.id}
+        for fname, flag in (('email_from', 'partner_email_update'), ('phone', 'partner_phone_update')):
+            if lead_form[fname] and (lead_form[fname] != lead[fname] or lead_form[flag]):
+                values[fname] = lead_form[fname]
+        lead.web_save(values, specification={})
+
     def test_offline_partner_change_write_matches_online(self):
         """ Onchanges don't run offline: after a partner change, the sync flags
-        still describe the previous partner, so the crm form force-saves nothing
-        (crm_offline_form.test.js). Replaying that write gives the lead the new
-        partner's email and phone, as the online onchange does, and leaves the new
-        partner untouched. """
+        still describe the previous partner. The crm form then force-saves the
+        lead's email and phone and names them in the context
+        (crm_partner_sync_force_saved, crm_offline_form.test.js); replaying that
+        write gives the same lead and partner state as the online onchange and
+        save, whether the new partner has its own email and phone (the lead takes
+        them, the partner is untouched) or not (the partner gets the lead's). """
         self.authenticate('admin', 'admin')
-        online_lead, _online_partner = self._lead_to_sync('Online')
-        offline_lead, _offline_partner = self._lead_to_sync('Offline')
-        online_contact, offline_contact = self.env['res.partner'].create([
-            {'name': 'New Online Contact', 'email': 'new.online@example.com', 'phone': '+32 470 00 00 01'},
-            {'name': 'New Offline Contact', 'email': 'new.offline@example.com', 'phone': '+32 470 00 00 02'},
-        ])
+        new_partners = {
+            'with email and phone': {'email': 'new@example.com', 'phone': '+32 470 00 00 01'},
+            'without email or phone': {'email': False, 'phone': False},
+            'with an email only': {'email': 'new@example.com', 'phone': False},
+        }
+        for case, partner_values in new_partners.items():
+            with self.subTest(case=case):
+                online_lead, _ = self._lead_to_sync('Online')
+                offline_lead, _ = self._lead_to_sync('Offline')
+                online_contact, offline_contact = self.env['res.partner'].create([
+                    {'name': 'New Online Contact', **partner_values},
+                    {'name': 'New Offline Contact', **partner_values},
+                ])
 
-        # online: the onchange pulls the new partner's email and phone into the lead
-        with Form(online_lead) as lead_form:
-            lead_form.partner_id = online_contact
-        # offline: the exact call the framework queued
-        self._replay('crm.lead', 'web_save', [[offline_lead.id], {'partner_id': offline_contact.id}],
-                     {'context': {}, 'specification': {}})
+                self._online_partner_change(online_lead, online_contact)
+                # offline: the exact call the framework queued
+                self._replay('crm.lead', 'web_save', [[offline_lead.id], {
+                    'partner_id': offline_contact.id,
+                    'email_from': offline_lead.email_from,
+                    'phone': offline_lead.phone,
+                }], {
+                    'context': {'crm_partner_sync_force_saved': ['email_from', 'phone']},
+                    'specification': {},
+                })
 
-        self.assertEqual(online_lead.email_from, 'new.online@example.com')
-        self.assertEqual(online_lead.phone, online_contact.phone)
-        self.assertEqual(offline_lead.email_from, 'new.offline@example.com')
-        self.assertEqual(offline_lead.phone, offline_contact.phone)
-        self.assertEqual(online_contact.email, 'new.online@example.com')
-        self.assertEqual(offline_contact.email, 'new.offline@example.com')
-        self.assertEqual(offline_contact.phone, '+32 470 00 00 02')
+                self.assertEqual(offline_lead.partner_id, offline_contact)
+                # the leads differ only by their initial email: compare with it swapped
+                swap = lambda value: value and value.replace('online@', 'offline@')
+                self.assertEqual(offline_lead.email_from, swap(online_lead.email_from))
+                self.assertEqual(offline_lead.phone, online_lead.phone)
+                self.assertEqual(offline_contact.email, swap(online_contact.email))
+                self.assertEqual(offline_contact.phone, online_contact.phone)
+                if partner_values['email']:
+                    self.assertEqual(offline_lead.email_from, 'new@example.com')
+                    self.assertEqual(offline_contact.email, 'new@example.com')
+                else:
+                    # propagated to the partner, as online (KICKOFF defect 2)
+                    self.assertEqual(offline_contact.email, 'offline@example.com')
+                if not partner_values['phone']:
+                    self.assertEqual(offline_contact.phone, '+32 494 44 44 44')
 
-        # Had the stale flags force-saved the lead's previous email, the replay
-        # would have overwritten the new partner's email.
+        # Without the context key, the force-saved values would be kept as the
+        # user's own: the new partner's email would be overwritten.
         lead, _partner = self._lead_to_sync('Stale')
         contact = self.env['res.partner'].create({'name': 'Kept Contact', 'email': 'kept@example.com'})
         self._replay('crm.lead', 'web_save', [[lead.id], {'partner_id': contact.id, 'email_from': lead.email_from}],
@@ -159,18 +195,20 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
 
     def test_offline_activity_create_replay(self):
         """ Scheduling an activity offline queues mail.activity.create with values
-        the client resolved itself (model name, record, type, summary, deadline,
-        assignee): replaying it links the activity to the lead. """
+        the client resolved itself (record, type, summary, deadline, assignee) and
+        the lead's model in the context, as the chatter schedules one:
+        mail.activity's own default_get resolves it (crm doesn't override
+        create). Replaying it links the activity to the lead. """
+        self.assertNotIn('create', vars(CrmMailActivity))
         lead = self._salesman_lead('Activity offline')
         call_type = self.env.ref('mail.mail_activity_data_call')
         [activity_id] = self._replay('mail.activity', 'create', [[{
-            'res_model': 'crm.lead',
             'res_id': lead.id,
             'activity_type_id': call_type.id,
             'summary': 'Call back about the quote',
             'date_deadline': '2030-01-15',
             'user_id': self.user_sales_salesman.id,
-        }]], {'context': {}})
+        }]], {'context': {'default_res_model': 'crm.lead'}})
 
         activity = self.env['mail.activity'].browse(activity_id)
         self.assertEqual(activity.res_model_id.model, 'crm.lead')
@@ -263,10 +301,15 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
         self.assertIsNone(forecast.get('mobile_pipeline'))
 
     def test_offline_wiring_and_unavailable_actions(self):
-        """ The screens of decisions D13 and D16 are opted out of the offline
-        cache, so the framework never makes them available offline; the stage list
-        uses the crm_stage_list view (read-only and not reorderable offline). """
-        for xmlid in (
+        """ The screens of decisions D13 and D16 (and the tags) are unavailable
+        offline through crm's RelationalModel patch, which names them by xml id:
+        each is an existing action, and keeps the framework's cache (cache-first
+        rendering online, as before). The stage list uses the crm_stage_list view
+        (read-only and not reorderable offline). """
+        with file_open('crm/static/src/views/relational_model_patch.js') as patch_file:
+            source = patch_file.read()
+        online_only = re.findall(r'^\s+"([\w.]+)",$', source.split('CRM_ONLINE_ONLY_ACTIONS')[1].split('];')[0], re.M)
+        self.assertEqual(sorted(online_only), sorted([
             'sales_team.crm_team_action_pipeline',
             'crm.crm_activity_report_action',
             'crm.crm_activity_report_action_team',
@@ -275,9 +318,13 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
             'sales_team.crm_team_member_action',
             'sales_team.mail_activity_type_action_config_sales',
             'crm.mail_activity_plan_action_lead',
-        ):
+            'sales_team.sales_team_crm_tag_action',
+        ]))
+        for xmlid in online_only:
             with self.subTest(action=xmlid):
-                self.assertFalse(self.env.ref(xmlid).cache)
+                action = self.env.ref(xmlid)
+                self.assertEqual(action._name, 'ir.actions.act_window')
+                self.assertTrue(action.cache)
         # the pipeline and the lead lists stay cached (available offline)
         for xmlid in ('crm.crm_lead_action_pipeline', 'crm.crm_lead_all_leads'):
             with self.subTest(action=xmlid):
@@ -322,15 +369,20 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
     def test_webmanifest_crm_shortcuts(self):
         """ The manifest's shortcuts are the parent's (the CRM app once), then
         My Pipeline and New Lead in the parent's shape with crm's own icon; the
-        rest of the manifest is the parent's (web's icons and colors, the share
-        target kept). """
+        manifest's icon is the addon's existing icon (openable, one large enough
+        for an installable app); the rest of the manifest is the parent's (its
+        colors, the share target kept). """
         self.authenticate(self.user_sales_salesman.login, self.user_sales_salesman.login)
-        with patch.object(CrmWebManifest, '_get_shortcuts', WebManifest._get_shortcuts):
+        with patch.object(CrmWebManifest, '_get_shortcuts', WebManifest._get_shortcuts), \
+             patch.object(CrmWebManifest, '_get_webmanifest', WebManifest._get_webmanifest):
             parent = self._manifest()
         manifest = self._manifest()
         shortcuts = manifest['shortcuts']
         self.assertEqual(shortcuts[:-2], parent['shortcuts'])
-        self.assertEqual({**manifest, 'shortcuts': None}, {**parent, 'shortcuts': None})
+        self.assertEqual(
+            {**manifest, 'shortcuts': None, 'icons': None},
+            {**parent, 'shortcuts': None, 'icons': None},
+        )
         crm_app_url = '/odoo?menu_id=%s' % self.env.ref('crm.crm_menu_root').id
         self.assertEqual([shortcut['url'] for shortcut in shortcuts].count(crm_app_url), 1)
 
@@ -344,40 +396,50 @@ class TestCrmOffline(HttpCase, TestCrmCommon):
             'icons': crm_icons,
         }, {
             'name': 'New Lead',
-            'url': '/odoo?menu_id=%s&action=%s&view_type=form' % (pipeline_menu.id, pipeline_action.id),
+            # the pipeline action's route, on a new record
+            'url': '/odoo/action-%s/new' % pipeline_action.id,
             'description': 'Create a lead in your pipeline',
             'icons': crm_icons,
         }])
         for shortcut in shortcuts[-2:]:
             self.assertEqual(shortcut.keys(), parent['shortcuts'][0].keys())
-        icon = self.url_open(crm_icons[0]['src'])
-        self.assertEqual(icon.status_code, 200)
-        self.assertEqual(icon.headers['Content-Type'], 'image/png')
 
-        # crm only extends the shortcuts (and keeps the share target): no route,
-        # service worker, offline page or icon of its own
-        for name in ('webmanifest', 'service_worker', 'offline', '_get_webmanifest',
-                     '_get_service_worker_content', '_icon_path', 'scoped_app_manifest'):
-            self.assertNotIn(name, vars(CrmWebManifest))
+        # the manifest's icon: the addon's existing icon assets
         self.assertEqual(manifest['icons'], [
-            {'src': '/web/static/img/odoo-icon-192x192.png', 'sizes': '192x192', 'type': 'image/png'},
-            {'src': '/web/static/img/odoo-icon-512x512.png', 'sizes': '512x512', 'type': 'image/png'},
+            {'src': '/crm/static/description/icon_hi.png', 'sizes': '512x512', 'type': 'image/png'},
+            {'src': '/crm/static/description/icon.png', 'sizes': '100x100', 'type': 'image/png'},
         ])
+        self.assertEqual(parent['icons'][0]['src'], '/web/static/img/odoo-icon-192x192.png')
+        for icon in manifest['icons'] + crm_icons:
+            response = self.url_open(icon['src'])
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['Content-Type'], 'image/png')
+
+        # crm extends the manifest's content only (and keeps the share target): no
+        # route, service worker or offline page of its own
+        for name in ('webmanifest', 'service_worker', 'offline', '_get_service_worker_content',
+                     '_icon_path', 'scoped_app_manifest'):
+            self.assertNotIn(name, vars(CrmWebManifest))
         self.assertEqual((manifest['background_color'], manifest['theme_color']), ('#714B67', '#714B67'))
         self.assertEqual(manifest['share_target']['action'], '/odoo?share_target=trigger')
 
     def test_webmanifest_no_crm_shortcuts_without_crm_access(self):
-        """ No CRM shortcut for anonymous visitors (no shortcut at all, as in web)
-        nor for internal users the CRM app isn't listed for. """
-        self.assertEqual(self._manifest()['shortcuts'], [])
+        """ No CRM shortcut or icon for anonymous visitors (no shortcut at all, as
+        in web) nor for internal users the CRM app isn't listed for. """
+        manifest = self._manifest()
+        self.assertEqual(manifest['shortcuts'], [])
+        self.assertEqual(manifest['icons'][0]['src'], '/web/static/img/odoo-icon-192x192.png')
 
         # an internal user with apps (Discuss) but not CRM
         user = mail_new_test_user(
             self.env, login='user_without_crm', groups='base.group_user,base.group_user_regular',
         )
         self.authenticate(user.login, user.login)
-        shortcuts = self._manifest()['shortcuts']
+        manifest = self._manifest()
+        shortcuts = manifest['shortcuts']
         self.assertTrue(shortcuts, "the parent's shortcuts (Discuss) are kept")
+        # nor CRM's icon: the parent's manifest icon
+        self.assertEqual(manifest['icons'][0]['src'], '/web/static/img/odoo-icon-192x192.png')
         crm_menus = self.env.ref('crm.crm_menu_root') + self.env.ref('crm.menu_crm_opportunities')
         for shortcut in shortcuts:
             self.assertNotIn(shortcut['name'], ('CRM', 'My Pipeline', 'New Lead'))

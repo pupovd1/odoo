@@ -2,7 +2,14 @@ import { defineMailModels } from "@mail/../tests/mail_test_helpers";
 import { expect, test } from "@odoo/hoot";
 import { advanceTime, animationFrame } from "@odoo/hoot-dom";
 import { Component, xml } from "@odoo/owl";
-import { defineModels, getService, mountWithCleanup, patchWithCleanup } from "@web/../tests/web_test_helpers";
+import {
+    defineModels,
+    getService,
+    mountWithCleanup,
+    onRpc,
+    patchWithCleanup,
+} from "@web/../tests/web_test_helpers";
+import { ConnectionLostError } from "@web/core/network/rpc";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import { useCrmOffline } from "@crm/mobile/offline_hooks";
 import { crmOfflineModels, mockCrmOffline } from "@crm/../tests/mock_server/crm_offline_test_helpers";
@@ -93,4 +100,70 @@ test("[Offline] shared offline hooks: connectivity, queued calls, pending sync, 
     expect(".o_probe_pending").toHaveText("synced");
     expect(".o_probe_creates").toHaveText("0");
     expect(probeComponent.crmOffline.queuedCalls()).toEqual([]);
+});
+
+test("[Offline] shared offline hooks: the records a queued call writes, in one read of the queue", async () => {
+    await mountWithCleanup(HooksProbe);
+    const offlinePlugin = getService(OfflinePlugin);
+    const schedule = (model, method, args) =>
+        offlinePlugin.scheduleORM(model, method, args, {}, { extras: { timeStamp: Date.now() } });
+    schedule("crm.lead", "web_save", [[1], { priority: "1" }]);
+    schedule("crm.lead", "action_set_won", [[4]]);
+    schedule("crm.lead", "web_save", [[4], { name: "Reception desk (2)" }]);
+    schedule("crm.lead", "create", [[{ name: "New lead" }]]);
+    schedule("crm.stage", "web_save", [[2], { name: "Fresh" }]);
+    expect([...probe.pendingResIds("crm.lead")].sort()).toEqual([1, 4]);
+    expect([...probe.pendingResIds("crm.stage")]).toEqual([2]);
+    expect([...probe.pendingResIds("crm.team")]).toEqual([]);
+});
+
+test("[Offline] shared offline hooks: a group or access probe lost with the connection is asked again once it is back", async () => {
+    // the network drops while the app still believes it's online
+    let networkDown = false;
+    for (const route of ["res.users/has_group", "crm.team/has_access"]) {
+        onRpc(`/web/dataset/call_kw/${route}`, () =>
+            networkDown ? new Response("", { status: 502 }) : undefined
+        );
+    }
+    onRpc("res.users", "has_group", ({ args }) => {
+        expect.step(`server: has_group ${args[1]}`);
+        return true;
+    });
+    onRpc("crm.team", "has_access", ({ args }) => {
+        expect.step(`server: has_access ${JSON.stringify(args)}`);
+        return true;
+    });
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(HooksProbe);
+
+    networkDown = true;
+    await expect(probe.hasGroup("sales_team.group_sale_manager")).rejects.toThrow(ConnectionLostError);
+    await expect(probe.checkAccessRight("crm.team", "write", 1)).rejects.toThrow(ConnectionLostError);
+    // the framework sees the connection lost
+    expect(probe.isOffline()).toBe(true);
+    expect.verifySteps([]);
+
+    // back online: web's user cache still holds the lost probes; crm asks the
+    // server again, without that cache
+    networkDown = false;
+    await setOffline(false);
+    await expect(probe.hasGroup("sales_team.group_sale_manager")).resolves.toBe(true);
+    await expect(probe.checkAccessRight("crm.team", "write", 1)).resolves.toBe(true);
+    expect.verifySteps([
+        "server: has_group sales_team.group_sale_manager",
+        'server: has_access [[1],"write"]',
+    ]);
+});
+
+test("[Online] shared offline hooks: group and access probes go through web's user cache", async () => {
+    onRpc("res.users", "has_group", ({ args }) => {
+        expect.step(`server: has_group ${args[1]}`);
+        return true;
+    });
+    mockCrmOffline();
+    await mountWithCleanup(HooksProbe);
+    await expect(probe.hasGroup("crm.group_use_lead")).resolves.toBe(true);
+    await expect(probe.hasGroup("crm.group_use_lead")).resolves.toBe(true);
+    // asked once: the second answer is web's cached one
+    expect.verifySteps(["server: has_group crm.group_use_lead"]);
 });

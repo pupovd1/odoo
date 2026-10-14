@@ -140,6 +140,9 @@ test("[Offline] a rejected replay is parked in the offline systray with its erro
     expect(".o_notification").toHaveCount(0);
 });
 
+// the offline activity panel has the activities and types to act on once they
+// were cached online: on a small screen
+test.tags("mobile");
 test("[Offline] the offline systray labels the calls crm queues", async () => {
     onRpc("mail.activity.type", "search_read", () => [{ id: 2, name: "Call", category: "phonecall" }]);
     onRpc("mail.activity", "search_read", () => [
@@ -311,6 +314,38 @@ const newLeadForm = `
             <field name="active" invisible="1"/>
         </sheet>
     </form>`;
+
+test("[Offline] New needs the new-lead onchange: never loaded online, New is disabled offline", async () => {
+    defineActions([
+        {
+            id: 1,
+            name: "Leads",
+            res_model: "crm.lead",
+            res_id: 3,
+            views: [[false, "form"]],
+            search_view_id: [false, "search"],
+        },
+    ]);
+    CrmLead._views = { form: newLeadForm, search: `<search/>` };
+    const setOffline = mockCrmOffline(["crm.lead/onchange", "crm.lead/web_save"]);
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    await runAllTimers();
+    // online, New is there; the new-lead form (its server onchange) was never loaded
+    expect(".o_form_button_create").toBeEnabled();
+
+    await setOffline(true);
+    // offline, nothing can answer that onchange: disabled, and unreachable
+    expect(".o_form_button_create").not.toBeEnabled();
+    queryOne(".o_form_button_create").dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    await animationFrame();
+    expect(".o_field_widget[name=name] input").toHaveValue("Meeting room");
+    expect.verifySteps([]);
+    expect(queuedCalls()).toEqual([]);
+
+    await setOffline(false);
+    expect(".o_form_button_create").toBeEnabled();
+});
 
 test("[Offline] a lead created with New offline is queued without an id and created on replay", async () => {
     stepServerCalls("web_save");

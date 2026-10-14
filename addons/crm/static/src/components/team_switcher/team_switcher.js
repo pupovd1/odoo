@@ -2,7 +2,7 @@ import { Dropdown } from "@web/core/dropdown/dropdown";
 import { DropdownItem } from "@web/core/dropdown/dropdown_item";
 import { useDropdownState } from "@web/core/dropdown/dropdown_hooks";
 import { _t } from "@web/core/l10n/translation";
-import { user } from "@web/core/user";
+import { ConnectionLostError } from "@web/core/network/rpc";
 import { useService } from "@web/core/utils/hooks";
 import { useCrmOffline } from "@crm/mobile/offline_hooks";
 
@@ -68,12 +68,26 @@ export class TeamSwitcher extends Component {
         return this.env.searchModel.state.switcherTeams;
     }
 
+    /**
+     * A probe lost with the connection is issued again once it is back (see
+     * useCrmOffline().hasGroup): "Manage Teams" is never left hidden for a
+     * sales manager.
+     */
     async loadSaleManagerGroup() {
-        if (this.crmOffline.isOffline() || this.saleManagerGroupLoaded) {
+        if (this.crmOffline.isOffline() || this.saleManagerGroupLoaded || this.saleManagerGroupLoading) {
             return;
         }
-        this.saleManagerGroupLoaded = true;
-        this.groupState.isSaleManager = await user.hasGroup("sales_team.group_sale_manager");
+        this.saleManagerGroupLoading = true;
+        try {
+            this.groupState.isSaleManager = await this.crmOffline.hasGroup("sales_team.group_sale_manager");
+            this.saleManagerGroupLoaded = true;
+        } catch (error) {
+            if (!(error instanceof ConnectionLostError)) {
+                throw error;
+            }
+        } finally {
+            this.saleManagerGroupLoading = false;
+        }
     }
 
     onClickManageTeams() {

@@ -10,7 +10,7 @@
                     t-out="this.contactName"/>
                 <span class="d-flex align-items-center w-100 gap-2">
                     <span class="o_crm_mobile_card_revenue" t-out="this.revenue"/>
-                    <span t-if="this.isPendingSync" class="o_crm_pending_sync badge text-bg-warning ms-auto">Pending sync</span>
+                    <span t-if="this.props.isPendingSync" class="o_crm_pending_sync badge text-bg-warning ms-auto">Pending sync</span>
                 </span>
             </button>
         </div>

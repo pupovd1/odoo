@@ -25,6 +25,7 @@ export class CrmMobileQuickCreate extends Component {
             expected_revenue: "",
             stage_id: this.props.stageId || this.props.stages[0]?.id || false,
             adding: false,
+            unconfirmed: false,
         });
     }
 
@@ -76,20 +77,29 @@ export class CrmMobileQuickCreate extends Component {
     }
 
     /**
-     * Adds the lead, then closes the sheet. When the server refuses the lead (a
-     * lost connection queues it instead), the sheet stays open with the values
-     * typed, to correct them and add again.
+     * Adds the lead, then closes the sheet. When the server refuses the lead,
+     * the sheet stays open with the values typed, to correct them and add
+     * again. When the connection dropped before the server answered (`onAdd`
+     * resolves false), the lead may already exist: the sheet stays open with
+     * the values typed and says so, and adding again (offline: queued) is the
+     * user's choice.
      */
     async add() {
         if (!this.canAdd) {
             return;
         }
         this.state.adding = true;
+        let added;
         try {
-            await this.props.onAdd(this.values);
+            added = await this.props.onAdd(this.values);
         } catch (error) {
             this.state.adding = false;
             throw error;
+        }
+        if (added === false) {
+            this.state.adding = false;
+            this.state.unconfirmed = true;
+            return;
         }
         this.props.close();
     }

@@ -55,6 +55,12 @@ export const crmKanbanView = {
                 this.model.bus.trigger("CRM:MOBILE_QUICK_CREATE");
                 return;
             }
+            // offline, the quick create or new-lead form needs the onchange the
+            // framework cached online: without it, New is disabled (framework),
+            // and unreachable by program too
+            if (this.offlinePlugin.isOffline() && !this.isNewButtonAvailableOffline) {
+                return;
+            }
             return super.createRecord(...arguments);
         }
 

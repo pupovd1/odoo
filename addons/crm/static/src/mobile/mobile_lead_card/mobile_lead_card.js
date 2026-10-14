@@ -1,5 +1,4 @@
 import { Component, t, useProps } from "@odoo/owl";
-import { useCrmOffline } from "@crm/mobile/offline_hooks";
 import { formatMonetary } from "@web/views/fields/formatters";
 
 /**
@@ -15,18 +14,20 @@ export function formatRevenue(value, currencyId) {
 
 /**
  * A lead of the small-screen pipeline: name, contact, expected revenue, and
- * whether a change of the lead waits in the framework's offline queue (read
- * from the queue itself, not from a flag the card keeps). The card is one
- * touch target, at least 44 x 44 px, opening the lead. It is a record of the
- * kanban (`o_kanban_record`, the datapoint id), as the kanban's own cards.
+ * whether a change of the lead waits in the framework's offline queue. That is
+ * read from the queue itself, not from a flag the card keeps: the pipeline
+ * reads the queue once for all its cards (useCrmOffline().pendingResIds) and
+ * gives each card its answer. The card is one touch target, at least 44 x 44
+ * px, opening the lead. It is a record of the kanban (`o_kanban_record`, the
+ * datapoint id), as the kanban's own cards.
  */
 export class CrmMobileLeadCard extends Component {
     static template = "crm.MobileLeadCard";
-    props = useProps({ record: t.any(), openRecord: t.function() });
-
-    setup() {
-        this.crmOffline = useCrmOffline();
-    }
+    props = useProps({
+        record: t.any(),
+        openRecord: t.function(),
+        isPendingSync: t.boolean().optional(),
+    });
 
     get data() {
         return this.props.record.data;
@@ -38,9 +39,5 @@ export class CrmMobileLeadCard extends Component {
 
     get revenue() {
         return formatRevenue(this.data.expected_revenue, this.data.company_currency?.id);
-    }
-
-    get isPendingSync() {
-        return this.crmOffline.isPendingSync("crm.lead", this.props.record.resId);
     }
 }

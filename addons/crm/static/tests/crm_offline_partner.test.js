@@ -67,9 +67,9 @@ test("[Offline] the lead's contact search answers from the relational-field cach
     await setOffline(true);
     await contains(".o_field_widget[name=partner_id] input").edit("Chairs", { confirm: false });
     await runAllTimers();
-    // the framework still sends its search (known limit): it fails silently, and the
-    // contacts loaded online answer instead. No Create / Create and edit / Search more.
-    expect.verifySteps(["res.partner/web_name_search"]);
+    // no search is sent (it can't be answered offline): the contacts loaded online
+    // answer. No Create / Create and edit / Search more.
+    expect.verifySteps([]);
     expect(queryAllTexts(".o-autocomplete--dropdown-menu .dropdown-item")).toEqual(["Chairs Contact"]);
     expect(".o_m2o_dropdown_option_create, .o_m2o_dropdown_option_create_edit").toHaveCount(0);
     expect(".o_m2o_dropdown_option_search_more").toHaveCount(0);

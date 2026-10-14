@@ -169,7 +169,11 @@ test("[Offline] [Mobile] a stage loaded online renders offline, a stage never lo
     await contains(".o_crm_mobile_next").click();
     expect(stageName()).toBe("Won");
     expect.verifySteps(["crm.lead/web_search_read"]); // tried, nothing cached
-    expect(".o_crm_mobile_stage .o_offline_action_helper, .o_crm_mobile_stage .o_view_nocontent").toHaveCount(1);
+    expect(".o_crm_mobile_stage .o_view_nocontent").toHaveCount(1);
+    // the framework's helper, for a stage: no Reset Filters (it would reset the
+    // whole pipeline's search, not the stage)
+    expect(".o_crm_mobile_stage .o_crm_offline_stage_helper").toHaveText(/this stage/);
+    expect(".o_crm_mobile_stage .o_crm_offline_stage_helper button").toHaveCount(0);
     expect(".o_crm_mobile_card").toHaveCount(0);
     expect(".o_dialog").toHaveCount(0);
     await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\/crm.lead\/web_read_group"/]);
@@ -528,24 +532,20 @@ test("[Mobile] a folded stage shown stays loaded when the pipeline reloads (team
 });
 
 test.tags("mobile");
-test("[Offline] [Mobile] after the pipeline reloads offline, a stage never loaded still shows the offline action helper", async () => {
+test("[Offline] [Mobile] a stage never loaded offers no Reset Filters: the pipeline's search is kept", async () => {
     const setOffline = mockCrmOffline();
     await openPipeline({ foldWon: true });
     await setOffline(true);
     await contains(".o_crm_mobile_next").click();
     await contains(".o_crm_mobile_next").click();
     expect(stageName()).toBe("Won");
-    expect(".o_crm_mobile_stage .o_view_nocontent").toHaveCount(1);
-
-    // the helper's Reset Filters reloads the pipeline (from the cache; the
-    // framework's refresh of the cached groups fails in the background)
-    await contains(".o_crm_mobile_stage .o_view_nocontent button").click();
-    await animationFrame();
-    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\/crm.lead\/web_read_group"/]);
-    expect(stageName()).toBe("Won");
-    expect(".o_crm_mobile_stage .o_view_nocontent").toHaveCount(1);
+    expect(".o_crm_mobile_stage .o_crm_offline_stage_helper").toHaveCount(1);
+    // the framework's helper would offer Reset Filters, which would reset the
+    // whole pipeline's search and reload it: not offered for a stage
+    expect(".o_crm_mobile_stage button").toHaveCount(0);
     expect(".o_crm_mobile_load_more").toHaveCount(0);
     expect(".o_crm_mobile_stage_empty").toHaveCount(0);
+    expect(".o_dialog").toHaveCount(0);
 });
 
 test.tags("mobile");
@@ -692,19 +692,35 @@ test("[Mobile] after a touch swipe, a tap or Enter on a lead still opens it", as
 });
 
 test.tags("mobile");
-test("[Mobile] quick create online: a create lost with the connection is queued, and the sheet closes", async () => {
-    onRpc("/web/dataset/call_kw/crm.lead/create", () => {
-        expect.step("create lost");
+test("[Mobile] quick create online: a create lost with the connection isn't queued (it may exist): the sheet says so", async () => {
+    const setOffline = mockCrmOffline();
+    // the create reaches the server, which creates the lead; its answer is lost
+    onRpc("/web/dataset/call_kw/crm.lead/create", async (request) => {
+        const { params } = await request.json();
+        MockServer.env["crm.lead"].create(params.args[0]);
+        expect.step("created, answer lost");
         return new Response("", { status: 502 });
     });
     await openPipeline();
     await quickCreate({ stageId: "1" });
-    await expect.waitForSteps(["create lost"]);
+    await expect.waitForSteps(["created, answer lost"]);
+    await animationFrame();
+    // queuing it would create the lead a second time at replay
+    expect(queuedCalls()).toEqual([]);
+    expect(".o_bottom_sheet").toHaveCount(1);
+    expect(".o_crm_mobile_quick_create_unconfirmed").toHaveText(/may already be in the pipeline/);
+    expect(".o_crm_mobile_quick_create [name=name]").toHaveValue("Lead created on the go");
+    expect(".o_crm_mobile_quick_create_add").toBeEnabled();
+    expect(".o_crm_mobile_pending_card").toHaveCount(0);
+    expect(".o_dialog").toHaveCount(0);
+    expect(MockServer.env["crm.lead"].search_count([["name", "=", "Lead created on the go"]])).toBe(1);
+
+    // adding it again (here offline) is the user's choice: then it is queued
+    await setOffline(true);
+    await contains(".o_crm_mobile_quick_create_add").click();
     await animationFrame();
     expect(".o_bottom_sheet").toHaveCount(0);
     expect(queuedMethods()).toEqual(["crm.lead.create"]);
     expect(queuedCalls()[0].args).toEqual([[{ ...createdValues, stage_id: 1 }]]);
     expect(".o_crm_mobile_pending_card .o_crm_mobile_card_name").toHaveText("Lead created on the go");
-    expect(".o_dialog").toHaveCount(0);
-    expect(MockServer.env["crm.lead"].search_count([["name", "=", "Lead created on the go"]])).toBe(0);
 });

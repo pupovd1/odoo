@@ -1,7 +1,15 @@
 import { defineMailModels } from "@mail/../tests/mail_test_helpers";
 import { expect, test } from "@odoo/hoot";
 import { animationFrame, runAllTimers } from "@odoo/hoot-dom";
-import { defineModels, fields, getService, mountView, onRpc } from "@web/../tests/web_test_helpers";
+import {
+    contains,
+    defineModels,
+    fields,
+    getService,
+    mountView,
+    onRpc,
+    toggleActionMenu,
+} from "@web/../tests/web_test_helpers";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
 import {
     CrmLead,
@@ -52,7 +60,8 @@ test("[Offline] lead properties: a definition access probe lost with the connect
     let networkDown = false;
     onRpc("/*", () => (networkDown ? new Response("", { status: 502 }) : undefined));
     const setOffline = mockCrmOffline(["crm.team/has_access"]);
-    await mountView({ type: "form", resModel: "crm.lead", resId: 1, arch: leadForm });
+    onRpc("crm.team", "has_access", () => true);
+    await mountView({ type: "form", resModel: "crm.lead", resId: 1, arch: leadForm, actionMenus: {} });
     await runAllTimers();
     const offlinePlugin = getService(OfflinePlugin);
 
@@ -73,14 +82,23 @@ test("[Offline] lead properties: a definition access probe lost with the connect
     expect.verifySteps(["crm.team/has_access"]);
     expect(offlinePlugin.isOffline()).toBe(true);
 
-    // back online for real: the field turns editable again; web's user cache
-    // answers the probe with the failed one, which counts as no access instead
-    // of switching the app offline at every reconnection
+    // back online for real: the field turns editable again. web's user cache
+    // keeps the lost probe's rejection: crm asks the server again, without that
+    // cache, and the app stays online
     networkDown = false;
     await setOffline(false);
     await runAllTimers();
     await animationFrame();
     expect(offlinePlugin.isOffline()).toBe(false);
-    expect.verifySteps([]);
+    expect.verifySteps(["crm.team/has_access"]);
     expect(budgetInput).toHaveCount(1);
+
+    // so the definition can be edited, without reloading the page
+    await toggleActionMenu();
+    await contains(".o-dropdown--menu .o_menu_item:contains(Edit Properties)").click();
+    await animationFrame();
+    expect(".o_field_widget[name=lead_properties] .o_field_property_open_popover").not.toHaveCount(0);
+    expect(".o_notification").toHaveCount(0); // no "can't edit the properties" warning
+    // (the field asks again as it turns editable: the server, again)
+    expect.verifySteps(["crm.team/has_access"]);
 });

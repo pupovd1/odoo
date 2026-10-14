@@ -157,6 +157,41 @@ test("[Online] dragging a lead to the won stage still looks up the rainbowman", 
     expect(".o_reward").toHaveCount(1);
 });
 
+test("[Offline] the recurring-revenue probe lost with the connection is issued again once it is back", async () => {
+    // the pipeline loads while the network flaps: the probe is lost, the app
+    // still believing it's online
+    let networkDown = true;
+    onRpc("/web/dataset/call_kw/res.users/has_group", async (request) => {
+        const { params } = await request.json();
+        const lost = networkDown && params.args[1] === "crm.group_use_recurring_revenues";
+        return lost ? new Response("", { status: 502 }) : undefined;
+    });
+    let probes = 0;
+    onRpc("res.users", "has_group", ({ args }) => {
+        if (args[1] === "crm.group_use_recurring_revenues") {
+            probes++;
+        }
+        return true;
+    });
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    await animationFrame();
+    expect(probes).toBe(0); // lost before reaching the server
+    const proposition = ".o_kanban_group:eq(1) .o_kanban_counter";
+    expect(proposition).not.toHaveText(/MRR/);
+    expect(".o_dialog").toHaveCount(0); // no error
+
+    // back online: probed again (web's user cache keeps the lost probe: each
+    // column asks the server), and the aggregate shows for a user of the group,
+    // without reloading the page
+    networkDown = false;
+    await setOffline(false);
+    await animationFrame();
+    expect(probes).toBeGreaterThan(0);
+    expect(`${proposition} .o_animated_number`).toHaveCount(2);
+});
+
 test("[Offline] the recurring-revenue aggregate is not probed offline and is hidden", async () => {
     // opened again offline, the pipeline comes from the framework's cache, which
     // still tries to refresh it from the server in the background

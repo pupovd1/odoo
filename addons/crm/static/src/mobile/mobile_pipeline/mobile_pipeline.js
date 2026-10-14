@@ -1,4 +1,4 @@
-import { Component, onWillStart, proxy, t, useOnChange, useProps } from "@odoo/owl";
+import { Component, computed, onWillStart, proxy, t, useOnChange, useProps } from "@odoo/owl";
 import { useCrmOffline } from "@crm/mobile/offline_hooks";
 import { CrmMobileLeadCard, formatRevenue } from "@crm/mobile/mobile_lead_card/mobile_lead_card";
 import { CrmMobileQuickCreate } from "@crm/mobile/mobile_quick_create/mobile_quick_create";
@@ -6,6 +6,15 @@ import { ConnectionLostError } from "@web/core/network/rpc";
 import { usePopover } from "@web/core/popover/popover_hook";
 import { useBus, useService } from "@web/core/utils/hooks";
 import { OfflineActionHelper } from "@web/views/offline_action_helper";
+
+/**
+ * The framework's offline action helper, for a stage of the pipeline never
+ * loaded online: no "Reset Filters" (it would reset the pipeline's whole search,
+ * not the stage); the stage loads once the connection is back.
+ */
+export class CrmOfflineStageHelper extends OfflineActionHelper {
+    static template = "crm.OfflineStageHelper";
+}
 
 /** Horizontal distance (px) a touch must travel, mostly sideways, to change stage. */
 const SWIPE_DISTANCE = 60;
@@ -24,7 +33,7 @@ const SWIPE_DISTANCE = 60;
  */
 export class CrmMobilePipeline extends Component {
     static template = "crm.MobilePipeline";
-    static components = { CrmMobileLeadCard, OfflineActionHelper };
+    static components = { CrmMobileLeadCard, CrmOfflineStageHelper };
     props = useProps({
         list: t.any(),
         openRecord: t.function(),
@@ -34,6 +43,8 @@ export class CrmMobilePipeline extends Component {
     setup() {
         this.orm = useService("orm");
         this.crmOffline = useCrmOffline();
+        // the leads with a queued call, read from the queue once for all cards
+        this.pendingLeadIds = computed(() => this.crmOffline.pendingResIds("crm.lead"));
         // the stage shown, by value: the kanban model keeps it when the user comes
         // back to the pipeline (CrmKanbanModel.exportState)
         this.state = proxy({ stageValue: this.props.list.model.mobileStage, unavailableGroupIds: [] });
@@ -192,10 +203,15 @@ export class CrmMobilePipeline extends Component {
     }
 
     /**
-     * Creates the lead online; offline (or when the connection drops), queues
-     * the create in the framework's queue, with the pipeline's defaults (type,
-     * team...) as the server applies them online. Rejects, nothing created or
-     * queued, when the server refuses the lead.
+     * Creates the lead online; offline, queues the create in the framework's
+     * queue, with the pipeline's defaults (type, team...) as the server applies
+     * them online. Rejects, nothing created or queued, when the server refuses
+     * the lead. When the connection drops during the create, the server may
+     * have created the lead already (only its answer lost): nothing is queued,
+     * which could create it twice. Returns false then, and the quick create
+     * keeps the values typed and says so; adding again while offline queues it.
+     *
+     * @returns {Promise<boolean>} false when it is unknown whether the lead was created
      */
     async addLead(values) {
         const list = this.props.list;
@@ -203,26 +219,23 @@ export class CrmMobilePipeline extends Component {
             Object.entries(list.context).filter(([key]) => key.startsWith("default_"))
         );
         if (!this.crmOffline.isOffline()) {
-            let created = false;
             try {
                 await this.orm.create("crm.lead", [values], { context });
-                created = true;
             } catch (error) {
+                if (error instanceof ConnectionLostError) {
+                    return false;
+                }
+                throw error;
+            }
+            // created: never queued again, even if the reload is lost with the
+            // connection (the lead shows when the pipeline next loads), nor
+            // added again: the quick create closes without waiting for the reload
+            list.load().catch((error) => {
                 if (!(error instanceof ConnectionLostError)) {
                     throw error;
                 }
-            }
-            if (created) {
-                // created: never queued again, even if the reload is lost with the
-                // connection (the lead shows when the pipeline next loads), nor
-                // added again: the quick create closes without waiting for the reload
-                list.load().catch((error) => {
-                    if (!(error instanceof ConnectionLostError)) {
-                        throw error;
-                    }
-                });
-                return;
-            }
+            });
+            return true;
         }
         const { actionId, actionName, viewType } = this.env.config;
         this.crmOffline.scheduleCall("crm.lead", "create", [[values]], { context }, {
@@ -231,6 +244,7 @@ export class CrmMobilePipeline extends Component {
             viewType,
             displayName: values.name,
         });
+        return true;
     }
 
     onPointerDown(ev) {

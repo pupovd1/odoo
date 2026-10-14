@@ -12,6 +12,19 @@ export const crmListView = {
             ...listView.Controller.components,
             LeadGenerationDropdown,
         }
+
+        /**
+         * Offline, a new lead needs the onchange the framework cached online:
+         * without it, New is disabled (framework), and unreachable by program too.
+         *
+         * @override
+         */
+        async onClickCreate() {
+            if (this.offlinePlugin.isOffline() && !this.isNewButtonAvailableOffline) {
+                return;
+            }
+            return super.onClickCreate(...arguments);
+        }
     },
     ControlPanel: CrmControlPanel,
     Model: CrmListModel,

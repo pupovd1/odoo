@@ -12,6 +12,9 @@ import { OfflineActionHelper } from "@web/views/offline_action_helper";
 /** What mark won gives the lead at once, offline (the won stage comes at replay). */
 const WON_VALUES = { won_status: "won", probability: 100, active: true };
 
+/** The lead's server buttons crm queues offline (see OFFLINE_BUTTONS). */
+const QUEUED_BUTTON_METHODS = ["action_set_won", "action_restore"];
+
 class CrmFormRecord extends formView.Model.Record {
      /**
      * override of record _save mechanism intended to affect the main form record
@@ -30,11 +33,15 @@ class CrmFormRecord extends formView.Model.Record {
      *
      * Offline, the save is queued with the same force-saved values. Onchanges
      * don't run offline though: once the partner was changed without its
-     * onchange, the flags describe the previous partner (see _getOnchangeValues),
-     * so nothing is force-saved and the server computes the email and phone from
-     * the new partner, as the onchange would have. The rainbowman lookup is
-     * skipped offline: it would fail, and a queued one would show detached from
-     * the stage change.
+     * onchange, the flags describe the previous partner (see _getOnchangeValues).
+     * Whether the email and phone must then be propagated depends on the new
+     * partner's own email and phone, which the client doesn't know offline: the
+     * lead's email and phone are force-saved, and named in the context
+     * (`crm_partner_sync_force_saved`) so that the server keeps them only for a
+     * partner without its own value, as the onchange would have (crm.lead
+     * `_partner_sync_drop_force_saved`). The rainbowman lookup is skipped
+     * offline: it would fail, and a queued one would show detached from the
+     * stage change.
      *
      * @override
      */
@@ -53,24 +60,95 @@ class CrmFormRecord extends formView.Model.Record {
                 ? this._values.partner_phone_update // original value
                 : this._changes.partner_phone_update; // new value
 
-        if (!this._partnerSyncFlagsStale) {
-            if (needsSynchronizationEmail && this._changes.email_from === undefined && this._values.email_from) {
-                this._changes.email_from = this._values.email_from;
-            }
-            if (needsSynchronizationPhone && this._changes.phone === undefined && this._values.phone) {
-                this._changes.phone = this._values.phone;
-            }
+        const flagsStale = this._partnerSyncFlagsStale;
+        const forceSaved = [];
+        if ((needsSynchronizationEmail || flagsStale) && this._changes.email_from === undefined && this._values.email_from) {
+            this._changes.email_from = this._values.email_from;
+            forceSaved.push("email_from");
+        }
+        if ((needsSynchronizationPhone || flagsStale) && this._changes.phone === undefined && this._values.phone) {
+            this._changes.phone = this._values.phone;
+            forceSaved.push("phone");
         }
 
         if ("stage_id" in this._changes) {
             changeStage = this._values.stage_id !== this.data.stage_id;
         }
 
-        const res = await super._save(...arguments);
+        // with stale flags, the server decides (see the context getter)
+        this._staleForceSaved = flagsStale ? forceSaved : [];
+        let res;
+        try {
+            res = await super._save(...arguments);
+        } finally {
+            this._staleForceSaved = [];
+        }
         if (res && changeStage && !this.model.offlinePlugin.isOffline()) {
             await checkRainbowmanMessage(this.model.orm, this.model.effect, this.resId);
         }
         return res;
+    }
+
+    /**
+     * The values force-saved from stale partner sync flags, for the save (online
+     * or queued) that carries them.
+     *
+     * @override
+     */
+    get context() {
+        const context = super.context;
+        if (!this._staleForceSaved?.length) {
+            return context;
+        }
+        return { ...context, crm_partner_sync_force_saved: this._staleForceSaved };
+    }
+
+    /**
+     * A save queued after other queued calls of this lead (Won, Restore) is
+     * replayed after them: a new queued save gets a later time stamp than any of
+     * them, never the same one.
+     *
+     * @override
+     */
+    _offlineSave() {
+        if (this.resModel === "crm.lead" && !this._offlineTimeStamp) {
+            this._offlineTimeStamp = this._nextQueueTimeStamp();
+        }
+        return super._offlineSave(...arguments);
+    }
+
+    /** The calls of this lead waiting in the queue (not parked with an error), oldest first. */
+    _queuedCallsOfLead() {
+        if (!this.resId) {
+            return [];
+        }
+        return getQueuedCalls(this.model.offlinePlugin).filter(
+            (call) =>
+                call.model === "crm.lead" &&
+                !call.extras?.error &&
+                getQueuedResIds(call).includes(this.resId)
+        );
+    }
+
+    /** A time stamp now, and later than every queued call of this lead. */
+    _nextQueueTimeStamp() {
+        const last = Math.max(
+            0,
+            this._offlineTimeStamp || 0,
+            ...this._queuedCallsOfLead().map((call) => call.extras?.timeStamp || 0)
+        );
+        return Math.max(Date.now(), last + 1);
+    }
+
+    /**
+     * After a queued Won or Restore, the next change of the lead is replayed
+     * after it: the queued save it would have merged into stays as queued, and
+     * the next save is a new queued call.
+     */
+    _detachOfflineSave() {
+        this._offlineId = undefined;
+        this._offlineChanges = undefined;
+        this._offlineTimeStamp = undefined;
     }
 
     /**
@@ -133,12 +211,18 @@ class CrmFormRecord extends formView.Model.Record {
      * Calls parked with an error are left out.
      */
     applyQueuedCalls() {
-        const calls = getQueuedCalls(this.model.offlinePlugin).filter(
-            (call) =>
-                call.model === "crm.lead" &&
-                !call.extras?.error &&
-                getQueuedResIds(call).includes(this.resId)
-        );
+        const calls = this._queuedCallsOfLead();
+        const savedAt = this._offlineTimeStamp;
+        if (
+            savedAt &&
+            calls.some((call) => QUEUED_BUTTON_METHODS.includes(call.method) && call.extras?.timeStamp > savedAt)
+        ) {
+            // the queued save shown again (its changes re-applied by the framework)
+            // predates a queued Won / Restore: it stays as queued, and the next
+            // changes are queued after them
+            this._commitSave();
+            this._detachOfflineSave();
+        }
         for (const call of calls) {
             if (call.method === "action_set_won") {
                 this._applyLocalValues(WON_VALUES);
@@ -161,8 +245,9 @@ class CrmFormRecord extends formView.Model.Record {
 
     _scheduleOffline(method) {
         this.model.offlinePlugin.scheduleORM(this.resModel, method, [[this.resId]], {}, {
-            extras: getScheduleORMExtras(this.model, [this]),
+            extras: { ...getScheduleORMExtras(this.model, [this]), timeStamp: this._nextQueueTimeStamp() },
         });
+        this._detachOfflineSave();
     }
 }
 
@@ -226,8 +311,8 @@ export class CrmFormController extends formView.Controller {
 
     setup() {
         super.setup();
-        // offline on a small screen, the lead's relational fields search the
-        // relational-field cache (see many2x_autocomplete_patch.js)
+        // offline, the lead's relational fields search the relational-field
+        // cache only (see many2x_autocomplete_patch.js)
         useSubEnv({ crmLeadForm: true });
         // a lead not available offline opens once the connection is back
         useOnChange(
@@ -248,6 +333,20 @@ export class CrmFormController extends formView.Controller {
         if (root.resModel === "crm.lead" && root.resId && !this.model.unavailableResId) {
             root.applyQueuedCalls();
         }
+    }
+
+    /**
+     * Offline, a new lead needs the new-lead onchange the framework cached
+     * online: without it, New is disabled (framework), and unreachable by
+     * program too.
+     *
+     * @override
+     */
+    async create() {
+        if (this.offlinePlugin.isOffline() && !this.isNewButtonAvailableOffline) {
+            return;
+        }
+        return super.create(...arguments);
     }
 
     displayName() {

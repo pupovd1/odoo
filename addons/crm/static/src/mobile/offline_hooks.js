@@ -1,5 +1,8 @@
 import { usePlugin } from "@odoo/owl";
+import { ConnectionLostError, rpc } from "@web/core/network/rpc";
 import { OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { user } from "@web/core/user";
+import { ensureArray } from "@web/core/utils/arrays";
 
 /**
  * Offline predicates shared by the CRM components, read from the framework's
@@ -45,6 +48,39 @@ export function isQueuedCreate(call) {
     return call.method === "create" || (call.method === "web_save" && !call.args?.[0]?.length);
 }
 
+/**
+ * Ids of the records of this model a queued call writes, in one pass over the
+ * queue (no copy, no sort).
+ *
+ * @param {OfflinePlugin} offlinePlugin
+ * @param {string} model
+ * @returns {Set<number>}
+ */
+export function getPendingResIds(offlinePlugin, model) {
+    const resIds = new Set();
+    for (const { value } of Object.values(offlinePlugin._ormToSync())) {
+        if (value.model === model) {
+            for (const resId of getQueuedResIds(value)) {
+                resIds.add(resId);
+            }
+        }
+    }
+    return resIds;
+}
+
+/**
+ * Calls the model method web's `user` calls for a group or access-right probe,
+ * without its cache.
+ */
+function callUserProbe(model, method, args) {
+    return rpc(`/web/dataset/call_kw/${model}/${method}`, {
+        model,
+        method,
+        args,
+        kwargs: { context: user.context },
+    });
+}
+
 export function useCrmOffline() {
     const offlinePlugin = usePlugin(OfflinePlugin);
     const crmOffline = {
@@ -63,9 +99,14 @@ export function useCrmOffline() {
          * @param {string} model
          * @param {number} resId
          */
-        isPendingSync: (model, resId) =>
-            !!resId &&
-            crmOffline.queuedCalls(model).some((call) => getQueuedResIds(call).includes(resId)),
+        isPendingSync: (model, resId) => !!resId && getPendingResIds(offlinePlugin, model).has(resId),
+        /**
+         * Ids of the records of this model a queued call writes.
+         *
+         * @param {string} model
+         * @returns {Set<number>}
+         */
+        pendingResIds: (model) => getPendingResIds(offlinePlugin, model),
         /**
          * The queued calls creating a record of this model.
          *
@@ -94,6 +135,44 @@ export function useCrmOffline() {
          */
         isAvailableOffline: (actionId, viewType, resId) =>
             offlinePlugin.isAvailableOffline(actionId, viewType, resId),
+        /**
+         * `user.hasGroup`, for a probe that can be lost with the connection: web's
+         * user cache keeps a lost probe's rejection for the rest of the session,
+         * so once the connection is back the server is asked again, without that
+         * cache. Rejects with the ConnectionLostError while the connection is lost.
+         *
+         * @param {string} group
+         * @returns {Promise<boolean>}
+         */
+        hasGroup: (group) =>
+            probeOnline(
+                () => user.hasGroup(group),
+                () => callUserProbe("res.users", "has_group", [user.userId, group])
+            ),
+        /**
+         * `user.checkAccessRight`, for a probe that can be lost with the
+         * connection (see hasGroup).
+         *
+         * @param {string} model
+         * @param {string} operation
+         * @param {number|number[]} [ids]
+         * @returns {Promise<boolean>}
+         */
+        checkAccessRight: (model, operation, ids = []) =>
+            probeOnline(
+                () => user.checkAccessRight(model, operation, ids),
+                () => callUserProbe(model, "has_access", [ensureArray(ids), operation])
+            ),
     };
+    async function probeOnline(cachedProbe, uncachedProbe) {
+        try {
+            return await cachedProbe();
+        } catch (error) {
+            if (!(error instanceof ConnectionLostError) || offlinePlugin.isOffline()) {
+                throw error;
+            }
+            return uncachedProbe();
+        }
+    }
     return crmOffline;
 }

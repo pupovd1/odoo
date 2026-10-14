@@ -52,18 +52,18 @@
             </ul>
             <div class="card-body d-flex flex-column gap-2">
                 <div t-if="this.state.activityTypes.length" class="o_crm_offline_schedule d-flex flex-wrap gap-2">
-                    <select class="form-select w-auto o_crm_offline_activity_type" aria-label="Activity type"
+                    <select class="form-select w-auto o_crm_offline_activity_type" aria-label="Activity type" data-available-offline=""
                         t-on-change="(ev) => this.onTypeChange(ev)">
                         <option t-foreach="this.state.activityTypes" t-as="type" t-key="type.id"
                             t-att-value="type.id" t-att-selected="type.id === this.state.typeId" t-out="type.name"/>
                     </select>
-                    <input type="text" class="form-control w-auto flex-grow-1 o_crm_offline_activity_summary"
+                    <input type="text" class="form-control w-auto flex-grow-1 o_crm_offline_activity_summary" data-available-offline=""
                         placeholder="Summary" aria-label="Summary" t-att-value="this.state.summary"
                         t-on-input="(ev) => this.state.summary = ev.target.value"/>
-                    <input type="date" class="form-control w-auto o_crm_offline_activity_deadline"
+                    <input type="date" class="form-control w-auto o_crm_offline_activity_deadline" data-available-offline=""
                         aria-label="Due date" t-att-value="this.state.deadline"
                         t-on-change="(ev) => this.state.deadline = ev.target.value"/>
-                    <select class="form-select w-auto o_crm_offline_activity_assignee" aria-label="Assigned to"
+                    <select class="form-select w-auto o_crm_offline_activity_assignee" aria-label="Assigned to" data-available-offline=""
                         t-on-change="(ev) => this.onAssigneeChange(ev)">
                         <option t-foreach="this.assignees" t-as="assignee" t-key="assignee.id"
                             t-att-value="assignee.id" t-att-selected="assignee.id === this.state.assigneeId" t-out="assignee.name"/>
@@ -78,7 +78,7 @@
                     <span class="text-muted small">No activity type was loaded online: scheduling is unavailable offline.</span>
                 </div>
                 <div class="o_crm_offline_log_call d-flex flex-wrap gap-2">
-                    <input type="text" class="form-control w-auto flex-grow-1 o_crm_offline_call_summary"
+                    <input type="text" class="form-control w-auto flex-grow-1 o_crm_offline_call_summary" data-available-offline=""
                         placeholder="Call summary" aria-label="Call summary" t-att-value="this.state.callSummary"
                         t-on-input="(ev) => this.state.callSummary = ev.target.value"/>
                     <button class="btn btn-secondary o_crm_offline_log_call_button" data-available-offline=""

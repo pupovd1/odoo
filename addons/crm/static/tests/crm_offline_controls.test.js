@@ -14,6 +14,8 @@ import {
     toggleActionMenu,
 } from "@web/../tests/web_test_helpers";
 import { user } from "@web/core/user";
+import { OfflinePlugin } from "@web/core/offline/offline_plugin";
+import { RelationalModel } from "@web/model/relational_model/relational_model";
 import { WebClient } from "@web/webclient/webclient";
 import { ShareTargetDialog } from "@web/webclient/share_target/share_target_dialog";
 import {
@@ -120,6 +122,16 @@ defineActions([
     },
 ]);
 
+/** Selects the list's row of this index: its checkbox, or a long press on small screens. */
+async function selectRow(index) {
+    if (getService("ui").isSmall) {
+        const { drop } = await contains(`.o_data_row:eq(${index})`).drag();
+        await drop();
+    } else {
+        await contains(`.o_data_row:eq(${index}) .o_list_record_selector input`).click();
+    }
+}
+
 /** Small screens fold the search bar behind a toggler: unfold it to read the facets. */
 async function showSearchBar() {
     if (getService("ui").isSmall) {
@@ -194,6 +206,91 @@ test("[Offline] team switcher: no group probe, dropdown disabled, Manage Teams u
     expect(".o_cp_team_switcher").toBeEnabled();
     await contains(".o_cp_team_switcher").click();
     expect(".o-dropdown--menu .dropdown-item:contains(Manage Teams)").toHaveCount(1);
+});
+
+/** The has_group route of the given group answers 502 while `isDown()`. */
+function loseGroupProbe(group, isDown) {
+    onRpc("/web/dataset/call_kw/res.users/has_group", async (request) => {
+        const { params } = await request.json();
+        return isDown() && params.args[1] === group ? new Response("", { status: 502 }) : undefined;
+    });
+}
+
+test("[Offline] team switcher: a sales-manager probe lost with the connection is issued again once it is back", async () => {
+    // the pipeline loads while the network flaps: the probe is lost, the app
+    // still believing it's online
+    let networkDown = true;
+    loseGroupProbe("sales_team.group_sale_manager", () => networkDown);
+    onRpc("res.users", "has_group", ({ args }) => {
+        if (args[1] === "sales_team.group_sale_manager") {
+            expect.step(`server: has_group ${args[1]}`);
+            return true;
+        }
+    });
+    const setOffline = mockCrmOffline();
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(1);
+    await animationFrame();
+    expect.verifySteps([]);
+    expect(".o_dialog").toHaveCount(0); // no error
+
+    // back online: probed again (web's user cache keeps the lost probe), so a
+    // sales manager gets Manage Teams back without reloading the page
+    networkDown = false;
+    await setOffline(false);
+    await animationFrame();
+    expect.verifySteps(["server: has_group sales_team.group_sale_manager"]);
+    await contains(".o_cp_team_switcher").click();
+    expect(".o-dropdown--menu .dropdown-item:contains(Manage Teams)").toHaveCount(1);
+});
+
+test("[Offline] screens of other models reached from CRM (tags...) keep their cache online, and are unavailable offline", async () => {
+    CrmTag._views = {
+        list: `<list editable="bottom"><field name="name"/></list>`,
+        search: `<search/>`,
+    };
+    defineActions([
+        {
+            id: 7,
+            xml_id: "sales_team.sales_team_crm_tag_action",
+            name: "Tags",
+            res_model: "crm.tag",
+            type: "ir.actions.act_window",
+            views: [[false, "list"]],
+        },
+    ]);
+    // whether each load reads the framework's disk cache
+    patchWithCleanup(RelationalModel.prototype, {
+        _getCacheParams() {
+            const params = super._getCacheParams(...arguments);
+            expect.step(`${this.env.config.actionXmlId || this.env.config.actionId}: ${params ? "cache" : "no cache"}`);
+            return params;
+        },
+    });
+    const setOffline = mockCrmOffline(["crm.tag/web_search_read"]);
+    await mountWithCleanup(WebClient);
+    await getService("action").doAction(7);
+    await runAllTimers();
+    expect(".o_data_row").toHaveCount(3);
+    // online, as before: cache-first rendering from the disk cache
+    expect.verifySteps(["sales_team.sales_team_crm_tag_action: cache", "crm.tag/web_search_read"]);
+    await getService("action").doAction(1);
+    await runAllTimers();
+    expect.verifySteps(["1: cache"]);
+
+    await setOffline(true);
+    const offlinePlugin = getService(OfflinePlugin);
+    // never marked available offline (its menu is disabled), unlike the pipeline
+    expect(offlinePlugin.isAvailableOffline(7)).toBe(false);
+    expect(offlinePlugin.isAvailableOffline(1)).toBe(true);
+    // opened anyway (breadcrumbs, URL): the offline action helper, no tag to edit
+    await getService("action").doAction(7);
+    await animationFrame();
+    expect.verifySteps(["sales_team.sales_team_crm_tag_action: no cache", "crm.tag/web_search_read"]);
+    expect(".o_data_row").toHaveCount(0);
+    expect(".o_view_nocontent").toHaveCount(1);
+    expect(queuedCalls()).toEqual([]);
+    await expect.waitForErrors([/Connection to "\/web\/dataset\/call_kw\/crm.tag\/web_search_read"/]);
 });
 
 test("[Offline] lead generation: Generate is disabled offline, with no module lookup or access probe", async () => {
@@ -332,7 +429,6 @@ test("[Offline] action menu items the framework greys out can't be run offline, 
     await expect.waitForSteps(["crm.lead/copy"]);
 });
 
-test.tags("desktop");
 test("[Offline] stages and teams: stage list read-only, no reorder, no delete offline", async () => {
     // opened again offline, the teams come from the framework's cache, which still
     // tries to refresh them in the background
@@ -346,10 +442,13 @@ test("[Offline] stages and teams: stage list read-only, no reorder, no delete of
 
     await setOffline(true);
     expect(".o_list_renderer .o_row_draggable").toHaveCount(0);
-    await contains(".o_data_row:eq(0) .o_list_record_selector input").click();
-    await contains(".o_data_row:eq(1) .o_list_record_selector input").click();
-    await contains(".o_data_row:eq(0) .o_data_cell[name=name]").click();
-    expect(".o_data_row.o_selected_row").toHaveCount(0);
+    await selectRow(0);
+    await selectRow(1);
+    if (!getService("ui").isSmall) {
+        // (small screens never edit in the list: a tap selects)
+        await contains(".o_data_row:eq(0) .o_data_cell[name=name]").click();
+        expect(".o_data_row.o_selected_row").toHaveCount(0);
+    }
     await toggleActionMenu();
     const deleteItem = ".o-dropdown--menu .o_menu_item:contains(Delete)";
     expect(deleteItem).toHaveClass("pe-none");
@@ -360,7 +459,7 @@ test("[Offline] stages and teams: stage list read-only, no reorder, no delete of
 
     // a sales team can't be deleted offline either
     await getService("action").doAction(6);
-    await contains(".o_data_row:eq(0) .o_list_record_selector input").click();
+    await selectRow(0);
     await toggleActionMenu();
     expect(deleteItem).toHaveClass("pe-none");
     queryFirst(deleteItem).click();

@@ -1,9 +1,10 @@
-import { Component, onWillStart, proxy, status, useOnChange, useProps } from "@odoo/owl";
+import { Component, onWillStart, proxy, status, useOnChange, usePlugin, useProps } from "@odoo/owl";
 import { getQueuedResIds, useCrmOffline } from "@crm/mobile/offline_hooks";
 import { serializeDate, today } from "@web/core/l10n/dates";
 import { _t } from "@web/core/l10n/translation";
 import { registry } from "@web/core/registry";
 import { user } from "@web/core/user";
+import { UIPlugin } from "@web/core/ui/ui_plugin";
 import { useService } from "@web/core/utils/hooks";
 import { getOfflineDisplayName, getScheduleORMExtras } from "@web/model/relational_model/utils";
 import { standardWidgetProps } from "@web/views/widgets/standard_widget_props";
@@ -14,12 +15,16 @@ const ACTIVITY_TYPE_FIELDS = ["name", "summary", "category", "icon"];
 /**
  * The activities of a lead, offline. The chatter is read-only offline (its data
  * is never cached), so the lead form gets this panel, rendered only while
- * offline: online it renders nothing and keeps the lead's activities and the
- * activity types in the framework's RPC disk cache; offline it reads them from
- * there and lets the user schedule an activity, log a call or mark an activity
- * done. Each of these is one call queued in the framework's queue; queued calls
- * show here at once, marked "Pending sync". Meetings are not offered: they
- * create a calendar event, unreachable offline.
+ * offline: online it renders nothing; on a small screen, it also keeps the
+ * lead's activities and the activity types in the framework's RPC disk cache
+ * (on a large screen it issues no request online: the lead form loads as
+ * before). Offline it reads them from there and lets the user schedule an
+ * activity, log a call or mark an activity done. Each of these is one call
+ * queued in the framework's queue; queued calls show here at once, marked
+ * "Pending sync". Meetings are not offered: they create a calendar event,
+ * unreachable offline. With nothing cached (a large screen, or a lead whose
+ * panel never loaded online), no activity is listed and Schedule is disabled;
+ * Log a call needs nothing cached.
  */
 export class CrmOfflineActivities extends Component {
     static template = "crm.OfflineActivities";
@@ -28,6 +33,7 @@ export class CrmOfflineActivities extends Component {
     setup() {
         this.orm = useService("orm");
         this.crmOffline = useCrmOffline();
+        this.uiPlugin = usePlugin(UIPlugin);
         this.state = proxy({
             activities: [],
             activityTypes: [],
@@ -43,7 +49,7 @@ export class CrmOfflineActivities extends Component {
             return this.crmOffline.isOffline() ? loaded : undefined;
         });
         useOnChange(
-            () => [this.crmOffline.isOffline(), this.props.record.resId],
+            () => [this.crmOffline.isOffline(), this.props.record.resId, this.uiPlugin.isSmall()],
             () => this.load(),
             { initialRun: false }
         );
@@ -105,11 +111,13 @@ export class CrmOfflineActivities extends Component {
     get pendingActivities() {
         return this.crmOffline
             .queuedCalls("mail.activity")
-            .filter((call) => call.method === "create")
-            .map((call) => ({ key: call.key, values: call.args?.[0]?.[0] || {} }))
             .filter(
-                ({ values }) => values.res_model === "crm.lead" && values.res_id === this.record.resId
+                (call) =>
+                    call.method === "create" &&
+                    call.kwargs?.context?.default_res_model === "crm.lead"
             )
+            .map((call) => ({ key: call.key, values: call.args?.[0]?.[0] || {} }))
+            .filter(({ values }) => values.res_id === this.record.resId)
             .map(({ key, values }) => ({
                 key,
                 summary: values.summary,
@@ -133,12 +141,15 @@ export class CrmOfflineActivities extends Component {
 
     async load() {
         const resId = this.record.resId;
-        if (!resId) {
+        const isOffline = this.crmOffline.isOffline();
+        // online, only small screens keep the panel's data cached: on a large
+        // screen the lead form issues no request it didn't before
+        if (!resId || (!isOffline && !this.uiPlugin.isSmall())) {
             return;
         }
         // online the cached copy is refreshed every time; offline what is already
         // in memory is used as is (no doomed request)
-        const update = this.crmOffline.isOffline() ? "once" : "always";
+        const update = isOffline ? "once" : "always";
         const disk = this.orm.cache({ type: "disk", update });
         // offline and never read online: nothing (a connection error); a failing
         // read never breaks the form either: the panel is a side prefetch
@@ -181,8 +192,9 @@ export class CrmOfflineActivities extends Component {
             return;
         }
         const type = this.selectedType;
+        // the lead's model goes in the context: mail.activity's default_get
+        // resolves it to res_model_id, as when the chatter schedules one
         const values = {
-            res_model: "crm.lead",
             res_id: this.record.resId,
             activity_type_id: type.id,
             summary: this.state.summary.trim() || type.summary || false,
@@ -193,7 +205,7 @@ export class CrmOfflineActivities extends Component {
             "mail.activity",
             "create",
             [[values]],
-            {},
+            { context: { default_res_model: "crm.lead" } },
             this.queueExtras(values.summary || type.name)
         );
         this.state.summary = "";

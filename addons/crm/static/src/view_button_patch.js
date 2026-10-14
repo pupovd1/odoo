@@ -8,23 +8,27 @@ import { ViewButton } from "@web/views/view_button/view_button";
  * `data-crm-offline-disable`, and the buttons available offline only on a
  * record that already has an id (the queue does no id remapping) with
  * `data-crm-offline-needs-id`: offline they are disabled and unreachable (no
- * pointer events, out of the tab order, click handler short-circuited).
+ * pointer events, out of the tab order, click handler short-circuited). Only
+ * the view buttons carrying one of these attributes read the connectivity:
+ * the others (every app's) are left as they are, and don't re-render when it
+ * changes.
  */
 patch(ViewButton.prototype, {
     setup() {
         super.setup(...arguments);
-        this.crmOffline = useCrmOffline();
+        const attrs = this.props.attrs || {};
+        this.crmOfflineDisable = attrs["data-crm-offline-disable"] !== undefined;
+        this.crmOfflineNeedsId = attrs["data-crm-offline-needs-id"] !== undefined;
+        if (this.crmOfflineDisable || this.crmOfflineNeedsId) {
+            this.crmOffline = useCrmOffline();
+        }
     },
 
     get isCrmDisabledOffline() {
-        if (!this.crmOffline.isOffline()) {
+        if (!this.crmOffline?.isOffline()) {
             return false;
         }
-        const attrs = this.props.attrs || {};
-        return (
-            attrs["data-crm-offline-disable"] !== undefined ||
-            (attrs["data-crm-offline-needs-id"] !== undefined && !this.props.record?.resId)
-        );
+        return this.crmOfflineDisable || (this.crmOfflineNeedsId && !this.props.record?.resId);
     },
 
     get disabled() {

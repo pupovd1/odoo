@@ -250,7 +250,6 @@
         </record>
 
         <record id="sales_team.crm_team_action_pipeline" model="ir.actions.act_window">
-            <field name="cache" eval="False"/>
             <field name="domain">[('use_opportunities', '=', True)]</field>
         </record>
 

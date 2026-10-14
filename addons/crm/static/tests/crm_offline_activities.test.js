@@ -36,8 +36,9 @@ const activityForm = `
     </form>`;
 
 /**
- * Lead 1 with a planned call, opened online: the panel keeps the lead's
- * activities and the activity types in the framework's cache. A meeting type
+ * Lead 1 with a planned call, opened online: on a small screen, the panel keeps
+ * the lead's activities and the activity types in the framework's cache (the
+ * tests that need them run under the mobile preset). A meeting type
  * exists too. The framework's startup sync (3 s after start) runs here, online,
  * as it does long before a user goes offline (hoot's mock of the browser's lock
  * API doesn't serialize it with the sync at reconnect).
@@ -63,6 +64,7 @@ async function openLeadWithActivities({ before } = {}) {
     return activityId;
 }
 
+test.tags("mobile");
 test("[Online] the offline activity panel renders nothing online and keeps its data cached", async () => {
     mockCrmOffline(["mail.activity/search_read", "mail.activity.type/search_read"]);
     await openLeadWithActivities();
@@ -70,6 +72,34 @@ test("[Online] the offline activity panel renders nothing online and keeps its d
     expect.verifySteps(["mail.activity/search_read", "mail.activity.type/search_read"]);
 });
 
+test.tags("desktop");
+test("[Online] [Desktop] the lead form issues no request for the offline activity panel", async () => {
+    const setOffline = mockCrmOffline(["mail.activity/search_read", "mail.activity.type/search_read"]);
+    await openLeadWithActivities();
+    expect(".o_crm_offline_activities").toHaveCount(0);
+    // the lead form loads as before: nothing read for the panel
+    expect.verifySteps([]);
+
+    // offline, the panel asks the framework's cache, which has nothing (its
+    // network attempt fails silently): no activity listed, no Schedule; Log a
+    // call needs nothing cached
+    await setOffline(true);
+    await expect.waitForSteps(["mail.activity/search_read", "mail.activity.type/search_read"]);
+    expect(".o_crm_offline_activities").toHaveCount(1);
+    expect(".o_crm_offline_activity").toHaveCount(0);
+    expect(".o_crm_offline_activities").toHaveText(/No activity cached for this lead/);
+    expect(".o_crm_offline_activity_type").toHaveCount(0);
+    expect(".o_crm_offline_schedule_button").not.toBeEnabled();
+    expect(".o_crm_offline_log_call_button").toBeEnabled();
+
+    // back online: still no request for the panel
+    await setOffline(false);
+    await runAllTimers();
+    expect(".o_crm_offline_activities").toHaveCount(0);
+    expect.verifySteps([]);
+});
+
+test.tags("mobile");
 test("[Offline] schedule an activity: one queued create with client-resolved values, shown as pending sync", async () => {
     const setOffline = mockCrmOffline(["mail.activity/create", "mail.activity/search_read"]);
     await openLeadWithActivities();
@@ -83,6 +113,9 @@ test("[Offline] schedule an activity: one queued create with client-resolved val
     // the types come from the cache; a meeting would create a calendar event: not offered
     expect(".o_crm_offline_activity_type option").toHaveCount(3);
     expect(".o_crm_offline_activity_type option:contains(Meeting)").toHaveCount(0);
+    // each control of the panel carries the framework's offline-availability attribute
+    expect(".o_crm_offline_activities :is(input, select, button)").toHaveCount(8);
+    expect(".o_crm_offline_activities :is(input, select, button):not([data-available-offline])").toHaveCount(0);
 
     await contains(".o_crm_offline_activity_type").select("2");
     await contains(".o_crm_offline_activity_summary").edit("Call back about the delivery");
@@ -94,7 +127,6 @@ test("[Offline] schedule an activity: one queued create with client-resolved val
     expect(queuedCalls()[0].args).toEqual([
         [
             {
-                res_model: "crm.lead",
                 res_id: 1,
                 activity_type_id: 2,
                 summary: "Call back about the delivery",
@@ -103,6 +135,8 @@ test("[Offline] schedule an activity: one queued create with client-resolved val
             },
         ],
     ]);
+    // the related model, for mail.activity's default_get (no crm override of create)
+    expect(queuedCalls()[0].kwargs).toEqual({ context: { default_res_model: "crm.lead" } });
     expect(".o_crm_offline_pending_activity").toHaveCount(1);
     expect(".o_crm_offline_pending_activity").toHaveText(/Call: Call back about the delivery/);
     expect(".o_crm_offline_pending_activity .o_crm_pending_sync").toHaveText("Pending sync");
@@ -138,6 +172,7 @@ test("[Offline] no activity type was cached: Schedule is disabled, not an empty 
     expect.verifySteps([]);
 });
 
+test.tags("mobile");
 test("[Offline] mark an activity done: only action_done is queued, shown done and pending sync", async () => {
     const setOffline = mockCrmOffline(["mail.activity/action_done"]);
     const activityId = await openLeadWithActivities();
@@ -176,6 +211,7 @@ test("[Offline] log a call: one queued crm.lead call, listed as pending sync", a
     expect(queuedCalls()).toEqual([]);
 });
 
+test.tags("mobile");
 test("[Offline] schedule an activity for the lead's salesperson: the queued create carries that assignee", async () => {
     let salespersonId;
     const setOffline = mockCrmOffline(["mail.activity/create"]);
@@ -200,7 +236,6 @@ test("[Offline] schedule an activity for the lead's salesperson: the queued crea
     await contains(".o_crm_offline_schedule_button").click();
     expect.verifySteps([]);
     expect(queuedCalls()[0].args[0][0]).toEqual({
-        res_model: "crm.lead",
         res_id: 1,
         activity_type_id: queuedCalls()[0].args[0][0].activity_type_id,
         summary: "Visit the customer",
