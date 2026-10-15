@@ -1,7 +1,8 @@
 import { registry } from "@web/core/registry";
 import { ShareTargetItem } from "@web/webclient/share_target/share_target_item";
-import { onWillStart } from "@odoo/owl";
+import { onWillStart, useOnChange } from "@odoo/owl";
 import { _t } from "@web/core/l10n/translation";
+import { useCrmOffline } from "@crm/mobile/offline_hooks";
 
 export class CrmShareTargetItem extends ShareTargetItem {
     static template = "crm.ShareTargetItem";
@@ -10,11 +11,38 @@ export class CrmShareTargetItem extends ShareTargetItem {
 
     setup() {
         super.setup();
+        this.crmOffline = useCrmOffline();
         this.teamsDomain = [["company_id", "in", [this.currentCompany.id, false]]];
         onWillStart(() => this.updateTeams());
+        // The teams, not read offline, are read once the connection is back.
+        useOnChange(
+            () => [this.crmOffline.isOffline()],
+            (isOffline) => !isOffline && !this.teamsLoaded && this.updateTeams(),
+            { initialRun: false }
+        );
+    }
+
+    /**
+     * Offline, sharing to a lead is unavailable: the teams can't be read, and the
+     * file upload and the lead creation need the server. The dialog's buttons are
+     * disabled by the framework; the save hook does nothing.
+     */
+    async checkAndActiveIfNeededUserCompany() {
+        if (!this.crmOffline.isOffline()) {
+            return super.checkAndActiveIfNeededUserCompany(...arguments);
+        }
+    }
+
+    async process() {
+        if (!this.crmOffline.isOffline()) {
+            return super.process(...arguments);
+        }
     }
 
     async updateTeams() {
+        if (this.crmOffline.isOffline()) {
+            return;
+        }
         this.state.teams = await this.orm
             .webSearchRead("crm.team", this.teamsDomain, {
                 specification: { id: {}, display_name: {} },
@@ -24,11 +52,13 @@ export class CrmShareTargetItem extends ShareTargetItem {
         this.state.selected_team = this.state.teams.length
             ? this.state.teams[0]
             : false;
+        this.teamsLoaded = true;
     }
 
     onCompanyChange(companyId) {
         super.onCompanyChange(companyId);
         this.teamsDomain = [["company_id", "in", [this.currentCompany.id, false]]];
+        this.teamsLoaded = false; // read for the new company, now or once back online
         this.updateTeams();
     }
 

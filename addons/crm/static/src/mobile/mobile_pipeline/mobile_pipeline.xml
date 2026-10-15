@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="crm.MobilePipeline">
+        <div class="o_crm_mobile_pipeline d-flex flex-column w-100">
+            <div t-if="this.group" class="o_crm_mobile_stage_header d-flex align-items-center gap-2 px-2 py-1 bg-view border-bottom">
+                <button type="button" class="o_crm_mobile_prev btn btn-light" data-available-offline=""
+                    aria-label="Previous stage" t-att-disabled="this.isFirst"
+                    t-on-click="() => this.goTo(this.stageIndex - 1)">
+                    <i class="oi" data-icon="chevron_backward" aria-hidden="true"/>
+                </button>
+                <div class="flex-grow-1 text-center text-truncate">
+                    <div class="o_crm_mobile_stage_name fw-bold text-truncate" t-out="this.group.displayName"/>
+                    <div class="small text-muted text-truncate">
+                        <span class="o_crm_mobile_stage_count" t-out="this.group.count"/> <t t-if="this.group.count === 1">lead</t><t t-else="">leads</t>
+                        <t t-if="this.revenue"> · <span class="o_crm_mobile_stage_revenue" t-out="this.revenue"/></t>
+                    </div>
+                </div>
+                <button type="button" class="o_crm_mobile_next btn btn-light" data-available-offline=""
+                    aria-label="Next stage" t-att-disabled="this.isLast"
+                    t-on-click="() => this.goTo(this.stageIndex + 1)">
+                    <i class="oi" data-icon="chevron_forward" aria-hidden="true"/>
+                </button>
+            </div>
+            <div class="o_crm_mobile_stage flex-grow-1 px-2 py-2"
+                t-on-pointerdown="(ev) => this.onPointerDown(ev)"
+                t-on-pointerup="(ev) => this.onPointerUp(ev)"
+                t-on-pointercancel="() => this.swipeStart = null"
+                t-on-click.capture="(ev) => this.onStageClick(ev)">
+                <t t-if="this.isUnavailable">
+                    <CrmOfflineStageHelper/>
+                </t>
+                <t t-elif="this.group">
+                    <CrmMobileLeadCard t-foreach="this.group.list.records" t-as="record" t-key="record.id"
+                        record="record" openRecord="this.props.openRecord"
+                        isPendingSync="this.pendingLeadIds().has(record.resId)"/>
+                    <div t-foreach="this.pendingLeads" t-as="pending" t-key="pending.key"
+                        class="o_crm_mobile_card o_crm_mobile_pending_card card mb-2">
+                        <div class="d-flex flex-column gap-1 p-3">
+                            <span class="o_crm_mobile_card_name fw-bold text-truncate" t-out="pending.values.name"/>
+                            <span t-if="pending.values.contact_name" class="o_crm_mobile_card_partner text-muted text-truncate"
+                                t-out="pending.values.contact_name"/>
+                            <span class="d-flex align-items-center gap-2">
+                                <span class="o_crm_mobile_card_revenue" t-out="this.formatPendingRevenue(pending.values)"/>
+                                <span class="o_crm_pending_sync badge text-bg-warning ms-auto">Pending sync</span>
+                            </span>
+                        </div>
+                    </div>
+                    <button t-if="this.unloadedCount > 0" type="button"
+                        class="o_crm_mobile_load_more btn btn-link w-100" t-on-click="() => this.loadMore()">
+                        Load more (<t t-out="this.unloadedCount"/>)
+                    </button>
+                    <p t-if="!this.group.list.records.length and !this.pendingLeads.length"
+                        class="o_crm_mobile_stage_empty text-muted text-center py-4">
+                        No lead in this stage.
+                    </p>
+                </t>
+            </div>
+        </div>
+    </t>
+
+    <t t-name="crm.OfflineStageHelper">
+        <div class="o_view_nocontent o_crm_offline_stage_helper">
+            <div class="o_nocontent_help">
+                <p><i class="oi oi-4x opacity-75" data-icon="link_off"/></p>
+                <p>There is no data to display offline for this stage: it wasn't loaded online.</p>
+                <p class="small text-muted">It loads here once the connection is back.</p>
+            </div>
+        </div>
+    </t>
+
+</templates>

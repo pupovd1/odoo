@@ -16,10 +16,14 @@ export class ForecastKanbanRenderer extends CrmKanbanRenderer {
     /**
      * @override
      *
-     * Allow creating groups when grouping by forecast_field.
+     * Allow creating groups when grouping by forecast_field. Offline, adding the
+     * next period would read uncached data: unavailable.
      */
     canCreateGroup() {
-        return super.canCreateGroup(...arguments) || this.isGroupedByForecastField();
+        return (
+            !this.crmOffline.isOffline() &&
+            (super.canCreateGroup(...arguments) || this.isGroupedByForecastField())
+        );
     }
 
     isGroupedByForecastField() {
@@ -34,6 +38,9 @@ export class ForecastKanbanRenderer extends CrmKanbanRenderer {
     }
 
     async addForecastColumn() {
+        if (this.crmOffline.isOffline()) {
+            return;
+        }
         const { name, type, granularity } = this.props.list.groupByField;
         this.fillTemporalService
             .getFillTemporalPeriod({

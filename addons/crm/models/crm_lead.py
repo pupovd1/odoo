@@ -677,6 +677,26 @@ class CrmLead(models.Model):
             partner_name = partner.parent_name
         return {'partner_name': partner_name or self.partner_name}
 
+    def _partner_sync_drop_force_saved(self, vals):
+        """ The lead form force-saves the lead's email and phone so that the
+        inverse methods propagate them to the partner. After a partner change
+        made offline, the partner's onchange didn't run: the client force-saves
+        both and lists them in the context key ``crm_partner_sync_force_saved``,
+        as it can't know whether the new partner has its own email or phone.
+        Done here as the onchange would have: when the new partner has its own
+        value, the lead takes it (compute) instead of the force-saved one;
+        otherwise the force-saved value is kept and propagated to the partner.
+
+        :param dict vals: values of a create or write, updated in place
+        """
+        force_saved = self.env.context.get('crm_partner_sync_force_saved')
+        if not force_saved or not vals.get('partner_id'):
+            return
+        partner = self.env['res.partner'].browse(vals['partner_id'])
+        for fname, partner_fname in (('email_from', 'email'), ('phone', 'phone')):
+            if fname in force_saved and partner[partner_fname]:
+                vals.pop(fname, None)
+
     def _get_partner_email_update(self, force_void=True):
         """Calculate if we should write the email on the related partner. When
         the email of the lead / partner is an empty string, we force it to False
@@ -730,6 +750,7 @@ class CrmLead(models.Model):
         for vals in vals_list:
             if vals.get('website'):
                 vals['website'] = self.env['res.partner']._clean_website(vals['website'])
+            self._partner_sync_drop_force_saved(vals)
         leads = super().create(vals_list)
 
         # handling a date_closed value if the lead is directly created in the won stage
@@ -760,6 +781,7 @@ class CrmLead(models.Model):
     def write(self, vals):
         if vals.get('website'):
             vals['website'] = self.env['res.partner']._clean_website(vals['website'])
+        self._partner_sync_drop_force_saved(vals)
 
         now = self.env.cr.now()
         stage_updated, stage_is_won = False, False
@@ -1295,6 +1317,29 @@ class CrmLead(models.Model):
                 return "week", earliest_start_dt.date()
             else:
                 return "month", earliest_start_dt.date()
+
+    def action_log_call(self, summary=False, feedback=False):
+        """ Log a call made on the leads: a Call activity created and marked done
+        at once, which posts the call in their chatter. A single call, so that the
+        client can queue it while offline.
+
+        :param str summary: summary of the call (defaults to the call type's)
+        :param str feedback: notes on the call, posted with it
+        """
+        call_type = self.env.ref('mail.mail_activity_data_call', raise_if_not_found=False) or \
+            self.env['mail.activity.type'].search([('category', '=', 'phonecall')], limit=1)
+        if not call_type:
+            raise UserError(_('Calls can only be logged with a "Call" activity type.'))
+        activities = self.env['mail.activity'].create([{
+            'activity_type_id': call_type.id,
+            'date_deadline': fields.Date.context_today(self),
+            'res_id': lead.id,
+            'res_model_id': self.env['ir.model']._get_id(self._name),
+            'summary': summary or call_type.summary or call_type.name,
+            'user_id': self.env.uid,
+        } for lead in self])
+        activities.action_feedback(feedback=feedback)
+        return True
 
     def action_reschedule_meeting(self):
         self.ensure_one()

@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<templates xml:space="preserve">
+
+    <t t-name="crm.StatusBarField" t-inherit="mail.RottingStatusBarDurationField" t-inherit-mode="primary">
+        <xpath expr="//button[@role='radio']" position="attributes">
+            <attribute name="data-available-offline">1</attribute>
+        </xpath>
+        <xpath expr="//button[@t-ref='this.afterRef']" position="attributes">
+            <attribute name="data-available-offline">1</attribute>
+        </xpath>
+        <xpath expr="//button[@t-ref='this.beforeRef']" position="attributes">
+            <attribute name="data-available-offline">1</attribute>
+        </xpath>
+        <xpath expr="//button[@t-ref='this.dropdownRef']" position="attributes">
+            <attribute name="data-available-offline">1</attribute>
+        </xpath>
+    </t>
+
+</templates>
